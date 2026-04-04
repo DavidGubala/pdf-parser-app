@@ -136,5 +136,10 @@ Extend the PDF Parse app to extract PO-specific fields (Company Name, Items with
 [X] Add PO Data tab in document detail view
 [X] Add urgency indicators (overdue, due soon, upcoming)
 [X] Update CSS with schedule dashboard styles
-[ ] Test with actual Purchase Order PDF
-[ ] Refine extraction based on real PO template
+[X] Test with actual Purchase Order PDF — corrected to 2 items, nVenia company
+[X] Refine extraction based on real PO template
+[X] Add calendar view with popover
+[X] Add filters (status, company, date range)
+[X] Add .gitignore
+[X] Comprehensive style/readability polish
+[X] Mobile-responsive redesign (card layout, stacked filters, bottom sheet popover, touch targets)

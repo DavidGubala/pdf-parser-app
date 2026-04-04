@@ -7,6 +7,45 @@ const API = "/api";
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
+// ---------------------------------------------------------------------------
+//  Dark mode — auto-detect + manual toggle with localStorage persistence
+// ---------------------------------------------------------------------------
+
+(function initTheme() {
+  const stored = localStorage.getItem("theme");
+  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const theme = stored || (prefersDark ? "dark" : "light");
+  document.documentElement.setAttribute("data-theme", theme);
+})();
+
+function setupThemeToggle() {
+  const btn = $("#theme-toggle");
+  if (!btn) return;
+
+  function updateIcon() {
+    const isDark = document.documentElement.getAttribute("data-theme") === "dark";
+    btn.textContent = isDark ? "\u2600" : "\u263E";
+    btn.title = isDark ? "Switch to light mode" : "Switch to dark mode";
+  }
+  updateIcon();
+
+  btn.addEventListener("click", () => {
+    const current = document.documentElement.getAttribute("data-theme");
+    const next = current === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    localStorage.setItem("theme", next);
+    updateIcon();
+  });
+
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
+    if (localStorage.getItem("theme")) return;
+    const theme = e.matches ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", theme);
+    updateIcon();
+  });
+}
+setupThemeToggle();
+
 // DOM references — global
 const documentsView   = $("#documents-view");
 const scheduleView    = $("#schedule-view");
@@ -165,10 +204,14 @@ function renderDocumentList(docs) {
       const badge = badgeHTML(d.status);
       return `
         <div class="doc-item" data-id="${d.id}">
-          <span class="doc-name" data-id="${d.id}">${escapeHTML(d.original_name)}</span>
-          ${badge}
-          ${d.page_count ? `<span class="doc-pages" style="font-size:.8rem;color:var(--clr-muted)">${d.page_count} pg</span>` : ""}
-          <span class="doc-date">${date}</span>
+          <div class="doc-item-main">
+            <span class="doc-name" data-id="${d.id}">${escapeHTML(d.original_name)}</span>
+            <div class="doc-item-meta">
+              ${badge}
+              ${d.page_count ? `<span class="doc-pages">${d.page_count} pg</span>` : ""}
+              <span class="doc-date">${date}</span>
+            </div>
+          </div>
           <button class="btn btn-danger delete-btn" data-id="${d.id}" title="Delete">&#10005;</button>
         </div>`;
     })
@@ -295,11 +338,11 @@ function renderPOTab(poData) {
         <span class="value">${escapeHTML(poData.po_number || "—")}</span>
       </div>
       <div class="po-meta-item">
-        <span class="label">PO Date</span>
-        <span class="value">${escapeHTML(poData.po_date || "—")}</span>
+        <span class="label">Order Date</span>
+        <span class="value">${formatDate(poData.po_date) || "—"}</span>
       </div>
       <div class="po-meta-item">
-        <span class="label">Items</span>
+        <span class="label">Line Items</span>
         <span class="value">${poData.items ? poData.items.length : 0}</span>
       </div>
     </div>
@@ -311,21 +354,26 @@ function renderPOTab(poData) {
       .map(
         (item) => `
         <tr>
-          <td class="item-cell">${escapeHTML(item.item_name || "—")}</td>
-          <td>${escapeHTML(item.description || "—")}</td>
-          <td>${escapeHTML(item.due_date || "—")}</td>
-          <td>${escapeHTML(item.quantity || "—")}</td>
-          <td>${escapeHTML(item.unit_price || "—")}</td>
+          <td data-label="Item" class="item-cell">${escapeHTML(item.item_name || "—")}</td>
+          <td data-label="Description">${escapeHTML(item.description || "—")}</td>
+          <td data-label="Due Date">${formatDate(item.due_date)}</td>
+          <td data-label="Qty">${escapeHTML(item.quantity || "—")}</td>
+          <td data-label="Unit Price">${formatPrice(item.unit_price)}</td>
         </tr>`
       )
       .join("");
 
     itemsHTML = `
-      <h4 style="margin-bottom:.5rem;color:var(--clr-muted)">Line Items</h4>
       <div class="table-wrapper">
         <table class="data-table">
           <thead>
-            <tr><th>Item</th><th>Description</th><th>Due Date</th><th>Qty</th><th>Unit Price</th></tr>
+            <tr>
+              <th>Item</th>
+              <th>Description</th>
+              <th>Due Date</th>
+              <th style="text-align:center">Qty</th>
+              <th style="text-align:right">Unit Price</th>
+            </tr>
           </thead>
           <tbody>${rows}</tbody>
         </table>
@@ -417,18 +465,19 @@ function renderScheduleTable(items) {
       const urgencyLabel = { overdue: "Overdue", due_soon: "Due Soon", upcoming: "Upcoming", no_date: "No Date" }[item.urgency] || item.urgency;
       return `
         <tr>
-          <td>
+          <td data-label="Status">
             <span class="urgency-badge urgency-badge--${item.urgency}">
               <span class="urgency-dot urgency-dot--${item.urgency}"></span>
               ${urgencyLabel}
             </span>
           </td>
-          <td>${formatDate(item.due_date)}</td>
-          <td class="company-cell">${escapeHTML(item.company_name || "—")}</td>
-          <td class="desc-cell" title="${escapeHTML(item.description || "")}">${escapeHTML(item.description || "—")}</td>
-          <td class="item-cell">${escapeHTML(item.item_name || "—")}</td>
-          <td>${escapeHTML(item.po_number || "—")}</td>
-          <td><span class="doc-link" data-doc-id="${item.document_id}">View</span></td>
+          <td data-label="Due Date">${formatDate(item.due_date)}</td>
+          <td data-label="Company" class="company-cell">${escapeHTML(item.company_name || "—")}</td>
+          <td data-label="Description" class="desc-cell" title="${escapeHTML(item.description || "")}">${escapeHTML(item.description || "—")}</td>
+          <td data-label="Qty" class="qty-cell">${escapeHTML(item.quantity || "—")}</td>
+          <td data-label="Item" class="item-cell">${escapeHTML(item.item_name || "—")}</td>
+          <td data-label="PO #">${escapeHTML(item.po_number || "—")}</td>
+          <td data-label=""><span class="doc-link" data-doc-id="${item.document_id}">View PO</span></td>
         </tr>`;
     })
     .join("");
@@ -442,6 +491,7 @@ function renderScheduleTable(items) {
             <th>Due Date</th>
             <th>Company</th>
             <th>Description</th>
+            <th class="qty-cell">Qty</th>
             <th>Item</th>
             <th>PO #</th>
             <th></th>
@@ -665,6 +715,13 @@ function formatDate(dateStr) {
   } catch {
     return escapeHTML(dateStr);
   }
+}
+
+function formatPrice(val) {
+  if (!val) return "—";
+  const n = parseFloat(val);
+  if (isNaN(n)) return escapeHTML(val);
+  return "$" + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 // ---------------------------------------------------------------------------
