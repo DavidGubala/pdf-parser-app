@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PDF Parse — Sign In</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <script>
+    (function(){var t=localStorage.getItem("theme")||(matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light");document.documentElement.setAttribute("data-theme",t)})();
+  </script>
+  <style>
+    body { justify-content: center; align-items: center; min-height: 100vh; }
+    .login-card {
+      background: var(--clr-surface);
+      border: 1px solid var(--clr-border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-lg);
+      padding: 2.5rem 2.25rem 2rem;
+      width: 100%;
+      max-width: 380px;
+    }
+    .login-logo {
+      text-align: center;
+      margin-bottom: 1.75rem;
+    }
+    .login-logo h1 {
+      font-size: 1.5rem;
+      font-weight: 800;
+      color: var(--clr-text);
+      letter-spacing: -.02em;
+    }
+    .login-logo .logo-icon { font-size: 1.3rem; margin-right: .15rem; }
+    .login-logo p {
+      color: var(--clr-muted);
+      font-size: .85rem;
+      margin-top: .25rem;
+    }
+    .login-field {
+      margin-bottom: 1rem;
+    }
+    .login-field label {
+      display: block;
+      font-size: .72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--clr-faint);
+      margin-bottom: .35rem;
+    }
+    .login-field input {
+      width: 100%;
+      height: 44px;
+      padding: 0 .85rem;
+      border: 1px solid var(--clr-border);
+      border-radius: 6px;
+      font-size: .95rem;
+      font-family: var(--font);
+      color: var(--clr-text);
+      background: var(--clr-bg);
+      transition: border-color .15s, box-shadow .15s;
+    }
+    .login-field input:focus {
+      outline: none;
+      border-color: var(--clr-primary-l);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, .15);
+    }
+    .login-submit {
+      width: 100%;
+      height: 44px;
+      border: none;
+      border-radius: 6px;
+      background: var(--clr-primary);
+      color: #fff;
+      font-size: .95rem;
+      font-weight: 700;
+      font-family: var(--font);
+      cursor: pointer;
+      transition: background .15s;
+      margin-top: .5rem;
+    }
+    .login-submit:hover { background: var(--clr-primary-l); }
+    .login-error {
+      background: var(--clr-danger-bg);
+      color: var(--clr-danger);
+      border-radius: 6px;
+      padding: .6rem .85rem;
+      font-size: .85rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+      text-align: center;
+    }
+    .login-remember {
+      display: flex;
+      align-items: center;
+      margin-bottom: .75rem;
+    }
+    .login-remember label {
+      display: flex;
+      align-items: center;
+      gap: .45rem;
+      font-size: .88rem;
+      color: var(--clr-muted);
+      cursor: pointer;
+      user-select: none;
+    }
+    .login-remember input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--clr-primary);
+      cursor: pointer;
+    }
+    .login-theme {
+      position: fixed;
+      top: 1rem;
+      right: 1rem;
+    }
+    @media (max-width: 640px) {
+      .login-card { padding: 2rem 1.5rem 1.5rem; margin: 0 .75rem; }
+    }
+  </style>
+</head>
+<body>
+  <button id="theme-toggle" class="theme-toggle login-theme" title="Toggle dark mode" aria-label="Toggle dark mode">&#9790;</button>
+
+  <div class="login-card">
+    <div class="login-logo">
+      <h1><span class="logo-icon">&#128196;</span> PDF Parse</h1>
+      <p>Sign in to continue</p>
+    </div>
+
+    {% if error %}
+    <div class="login-error">{{ error }}</div>
+    {% endif %}
+
+    <form method="POST" action="/login">
+      <div class="login-field">
+        <label for="username">Username</label>
+        <input type="text" id="username" name="username" autocomplete="username" autofocus required />
+      </div>
+      <div class="login-field">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" autocomplete="current-password" required />
+      </div>
+      <div class="login-remember">
+        <label><input type="checkbox" name="remember" value="1" /> Remember me</label>
+      </div>
+      <button type="submit" class="login-submit">Sign In</button>
+    </form>
+  </div>
+
+  <script>
+    (function() {
+      var btn = document.getElementById("theme-toggle");
+      function upd() {
+        var d = document.documentElement.getAttribute("data-theme") === "dark";
+        btn.textContent = d ? "\u2600" : "\u263E";
+      }
+      upd();
+      btn.addEventListener("click", function() {
+        var c = document.documentElement.getAttribute("data-theme");
+        var n = c === "dark" ? "light" : "dark";
+        document.documentElement.setAttribute("data-theme", n);
+        localStorage.setItem("theme", n);
+        upd();
+      });
+    })();
+  </script>
+</body>
+</html>

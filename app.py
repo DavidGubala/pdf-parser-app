@@ -5,17 +5,24 @@ import json
 import sqlite3
 import logging
 import threading
+import functools
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-from flask import Flask, render_template, request, jsonify, send_from_directory
+from flask import (
+    Flask, render_template, request, jsonify,
+    send_from_directory, session, redirect, url_for,
+)
 from werkzeug.exceptions import HTTPException
 from werkzeug.utils import secure_filename
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = Path(__file__).parent / "uploads"
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB
 app.config["DATABASE"] = Path(__file__).parent / "documents.db"
+app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-me-in-production")
+app.permanent_session_lifetime = timedelta(days=30)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -37,6 +44,61 @@ def handle_generic_error(exc):
 
 
 # ---------------------------------------------------------------------------
+# Authentication
+# ---------------------------------------------------------------------------
+
+def login_required(f):
+    @functools.wraps(f)
+    def wrapper(*args, **kwargs):
+        if "user_id" not in session:
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "Authentication required"}), 401
+            return redirect(url_for("login"))
+        return f(*args, **kwargs)
+    return wrapper
+
+
+def current_user_id():
+    return session.get("user_id", "")
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "GET":
+        if "user_id" in session:
+            return redirect(url_for("index"))
+        return render_template("login.html")
+
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
+
+    if not username or not password:
+        return render_template("login.html", error="Please enter both fields.")
+
+    db = get_db()
+    user = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+    db.close()
+
+    if user is None or not check_password_hash(user["password_hash"], password):
+        return render_template("login.html", error="Invalid username or password.")
+
+    session.clear()
+    session.permanent = bool(request.form.get("remember"))
+    session["user_id"] = user["id"]
+    session["username"] = user["username"]
+    logger.info("User %r logged in (remember=%s)", username, session.permanent)
+    return redirect(url_for("index"))
+
+
+@app.route("/logout")
+def logout():
+    username = session.get("username", "?")
+    session.clear()
+    logger.info("User %r logged out", username)
+    return redirect(url_for("login"))
+
+
+# ---------------------------------------------------------------------------
 # Database helpers
 # ---------------------------------------------------------------------------
 
@@ -50,8 +112,17 @@ def get_db():
 def init_db():
     db = get_db()
     db.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
+    db.execute("""
         CREATE TABLE IF NOT EXISTS documents (
             id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL DEFAULT '',
             filename TEXT NOT NULL,
             original_name TEXT NOT NULL,
             upload_time TEXT NOT NULL,
@@ -60,7 +131,8 @@ def init_db():
             page_count INTEGER,
             text_content TEXT,
             tables_json TEXT,
-            images_json TEXT
+            images_json TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id)
         )
     """)
     db.execute("""
@@ -86,6 +158,12 @@ def init_db():
             FOREIGN KEY (po_id) REFERENCES purchase_orders(id) ON DELETE CASCADE
         )
     """)
+    # Migrate: add user_id to existing documents table if missing
+    try:
+        db.execute("ALTER TABLE documents ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
+        logger.info("Migrated documents table: added user_id column")
+    except sqlite3.OperationalError:
+        pass  # column already exists
     db.commit()
     db.close()
 
@@ -383,8 +461,9 @@ def process_pdf(doc_id: str, filepath: str):
 # ---------------------------------------------------------------------------
 
 @app.route("/")
+@login_required
 def index():
-    return render_template("index.html")
+    return render_template("index.html", username=session.get("username", ""))
 
 
 # ---------------------------------------------------------------------------
@@ -392,6 +471,7 @@ def index():
 # ---------------------------------------------------------------------------
 
 @app.route("/api/upload", methods=["POST"])
+@login_required
 def upload_file():
     if "file" not in request.files:
         return jsonify({"error": "No file provided"}), 400
@@ -411,11 +491,12 @@ def upload_file():
     file.save(str(filepath))
 
     now = datetime.now(timezone.utc).isoformat()
+    uid = current_user_id()
     db = get_db()
     db.execute(
-        """INSERT INTO documents (id, filename, original_name, upload_time, status)
-           VALUES (?, ?, ?, ?, 'processing')""",
-        (doc_id, stored_name, file.filename, now),
+        """INSERT INTO documents (id, user_id, filename, original_name, upload_time, status)
+           VALUES (?, ?, ?, ?, ?, 'processing')""",
+        (doc_id, uid, stored_name, file.filename, now),
     )
     db.commit()
     db.close()
@@ -428,19 +509,24 @@ def upload_file():
 
 
 @app.route("/api/documents", methods=["GET"])
+@login_required
 def list_documents():
+    uid = current_user_id()
     db = get_db()
     rows = db.execute(
-        "SELECT id, original_name, upload_time, status, error, page_count FROM documents ORDER BY upload_time DESC"
+        "SELECT id, original_name, upload_time, status, error, page_count FROM documents WHERE user_id=? ORDER BY upload_time DESC",
+        (uid,),
     ).fetchall()
     db.close()
     return jsonify([dict(r) for r in rows])
 
 
 @app.route("/api/documents/<doc_id>", methods=["GET"])
+@login_required
 def get_document(doc_id):
+    uid = current_user_id()
     db = get_db()
-    row = db.execute("SELECT * FROM documents WHERE id=?", (doc_id,)).fetchone()
+    row = db.execute("SELECT * FROM documents WHERE id=? AND user_id=?", (doc_id, uid)).fetchone()
     db.close()
     if row is None:
         return jsonify({"error": "Document not found"}), 404
@@ -448,9 +534,11 @@ def get_document(doc_id):
 
 
 @app.route("/api/documents/<doc_id>/pdf", methods=["GET"])
+@login_required
 def get_document_pdf(doc_id):
+    uid = current_user_id()
     db = get_db()
-    row = db.execute("SELECT filename FROM documents WHERE id=?", (doc_id,)).fetchone()
+    row = db.execute("SELECT filename FROM documents WHERE id=? AND user_id=?", (doc_id, uid)).fetchone()
     db.close()
     if row is None:
         return jsonify({"error": "Document not found"}), 404
@@ -458,9 +546,11 @@ def get_document_pdf(doc_id):
 
 
 @app.route("/api/documents/<doc_id>", methods=["DELETE"])
+@login_required
 def delete_document(doc_id):
+    uid = current_user_id()
     db = get_db()
-    row = db.execute("SELECT filename FROM documents WHERE id=?", (doc_id,)).fetchone()
+    row = db.execute("SELECT filename FROM documents WHERE id=? AND user_id=?", (doc_id, uid)).fetchone()
     if row is None:
         db.close()
         return jsonify({"error": "Document not found"}), 404
@@ -485,14 +575,17 @@ def delete_document(doc_id):
 # ---------------------------------------------------------------------------
 
 @app.route("/api/purchase-orders", methods=["GET"])
+@login_required
 def list_purchase_orders():
+    uid = current_user_id()
     db = get_db()
     pos = db.execute("""
         SELECT po.*, d.original_name AS document_name
         FROM purchase_orders po
         JOIN documents d ON po.document_id = d.id
+        WHERE d.user_id = ?
         ORDER BY po.created_at DESC
-    """).fetchall()
+    """, (uid,)).fetchall()
 
     result = []
     for po in pos:
@@ -509,14 +602,16 @@ def list_purchase_orders():
 
 
 @app.route("/api/purchase-orders/<po_id>", methods=["GET"])
+@login_required
 def get_purchase_order(po_id):
+    uid = current_user_id()
     db = get_db()
     po = db.execute("""
         SELECT po.*, d.original_name AS document_name
         FROM purchase_orders po
         JOIN documents d ON po.document_id = d.id
-        WHERE po.id = ?
-    """, (po_id,)).fetchone()
+        WHERE po.id = ? AND d.user_id = ?
+    """, (po_id, uid)).fetchone()
 
     if po is None:
         db.close()
@@ -534,7 +629,9 @@ def get_purchase_order(po_id):
 
 
 @app.route("/api/schedule", methods=["GET"])
+@login_required
 def get_schedule():
+    uid = current_user_id()
     db = get_db()
 
     items = db.execute("""
@@ -546,13 +643,17 @@ def get_schedule():
         FROM po_items pi
         JOIN purchase_orders po ON pi.po_id = po.id
         JOIN documents d ON po.document_id = d.id
+        WHERE d.user_id = ?
         ORDER BY
             CASE WHEN pi.due_date = '' OR pi.due_date IS NULL THEN 1 ELSE 0 END,
             pi.due_date ASC,
             po.company_name ASC
-    """).fetchall()
+    """, (uid,)).fetchall()
 
-    total_pos = db.execute("SELECT COUNT(*) AS c FROM purchase_orders").fetchone()["c"]
+    total_pos = db.execute(
+        "SELECT COUNT(*) AS c FROM purchase_orders po JOIN documents d ON po.document_id = d.id WHERE d.user_id = ?",
+        (uid,),
+    ).fetchone()["c"]
     total_items = len(items)
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -601,4 +702,6 @@ def get_schedule():
 if __name__ == "__main__":
     app.config["UPLOAD_FOLDER"].mkdir(exist_ok=True)
     init_db()
-    app.run(debug=True, port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    debug = os.environ.get("FLASK_ENV", "development") == "development"
+    app.run(debug=debug, host="0.0.0.0", port=port)

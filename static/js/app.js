@@ -46,6 +46,42 @@ function setupThemeToggle() {
 }
 setupThemeToggle();
 
+// ---------------------------------------------------------------------------
+//  User dropdown menu
+// ---------------------------------------------------------------------------
+
+(function setupUserMenu() {
+  const menuBtn = $("#user-menu-btn");
+  const dropdown = $("#user-dropdown");
+  const menuWrap = $(".user-menu");
+  if (!menuBtn || !dropdown || !menuWrap) return;
+
+  menuBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = !dropdown.hidden;
+    dropdown.hidden = open;
+    menuWrap.classList.toggle("open", !open);
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!menuWrap.contains(e.target)) {
+      dropdown.hidden = true;
+      menuWrap.classList.remove("open");
+    }
+  });
+})();
+
+// Redirect to login on 401 from any API call
+const _origFetch = window.fetch;
+window.fetch = async function (...args) {
+  const res = await _origFetch.apply(this, args);
+  if (res.status === 401) {
+    window.location.href = "/login";
+    return res;
+  }
+  return res;
+};
+
 // DOM references — global
 const documentsView   = $("#documents-view");
 const scheduleView    = $("#schedule-view");

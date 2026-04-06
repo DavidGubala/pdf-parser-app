@@ -20,6 +20,12 @@
             <button class="nav-btn" data-view="schedule">Schedule</button>
           </nav>
           <button id="theme-toggle" class="theme-toggle" title="Toggle dark mode" aria-label="Toggle dark mode">&#9790;</button>
+          <div class="user-menu">
+            <button class="header-user" id="user-menu-btn">{{ username }} <span class="user-caret">&#9662;</span></button>
+            <div class="user-dropdown" id="user-dropdown" hidden>
+              <a href="/logout" class="user-dropdown-item">Sign out</a>
+            </div>
+          </div>
         </div>
       </div>
       <p class="tagline">Upload, extract, schedule</p>

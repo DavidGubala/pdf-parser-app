@@ -106,6 +106,8 @@ If needed, you can further use the `web_scraper.py` file to scrape the web page 
 - Docling document converter: `from docling.document_converter import DocumentConverter`
 - nVenia PO format: Docling produces separate tables per line item (not one table for all items). Each item table has 3 rows: data row (part#, qty, price), description/labels row, and date/shipping row. Metadata (Vendor, PO#) is in a header table with heavily merged cells and pipe-delimited content — parse the raw markdown text with regex, not table column matching.
 - When Docling output has pipe-delimited table content inline in text, regex must account for `|` characters — use `[:\s|]+` instead of `[:\s]+` for matching field delimiters.
+- Auth uses Flask sessions with `werkzeug.security` password hashing. Users stored in SQLite `users` table. Secret key from `SECRET_KEY` env var.
+- Railway deployment: gunicorn as WSGI server, `railway.json` for start command, `PORT` env var for binding.
 - JarBorne is the user's company (vendor/supplier). The "Company Name" on POs should be the **customer/buyer** (Ship To), not the vendor. Extract from "Ship To:" field.
 
 # Scratchpad
@@ -143,3 +145,11 @@ Extend the PDF Parse app to extract PO-specific fields (Company Name, Items with
 [X] Add .gitignore
 [X] Comprehensive style/readability polish
 [X] Mobile-responsive redesign (card layout, stacked filters, bottom sheet popover, touch targets)
+[X] Dark mode toggle with system preference auto-detection
+[X] Better section spacing (flex gap on view containers)
+[X] Quantity column added to schedule table
+[X] Auth: users table, login/logout, session-based auth, @login_required
+[X] Multi-user: user_id on documents, all queries scoped to current user
+[X] Login page with dark mode support
+[X] Seed script (seed_user.py) for creating user accounts
+[X] Railway deployment config (Procfile, runtime.txt, railway.json, gunicorn)
