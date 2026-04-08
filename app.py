@@ -2,8 +2,10 @@ import os
 import re
 import uuid
 import json
+import time
 import sqlite3
 import logging
+import logging.handlers
 import threading
 import functools
 from datetime import datetime, timezone, timedelta
@@ -24,7 +26,33 @@ app.config["DATABASE"] = Path(__file__).parent / "documents.db"
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-me-in-production")
 app.permanent_session_lifetime = timedelta(days=30)
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+# ---------------------------------------------------------------------------
+# Logging — stdout + daily log file (logs/YYYY-MM-DD.log)
+# ---------------------------------------------------------------------------
+
+LOG_DIR = Path(__file__).parent / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
+
+_root_logger = logging.getLogger()
+_root_logger.setLevel(logging.INFO)
+
+_stream_handler = logging.StreamHandler()
+_stream_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+_root_logger.addHandler(_stream_handler)
+
+_file_handler = logging.handlers.TimedRotatingFileHandler(
+    LOG_DIR / "app.log",
+    when="midnight",
+    backupCount=0,   # keep all daily files indefinitely
+    utc=True,
+)
+_file_handler.suffix = "%Y-%m-%d"
+_file_handler.namer = lambda name: str(LOG_DIR / (name.rsplit(".", 1)[-1] + ".log"))
+_file_handler.rotator = lambda src, dst: Path(src).rename(dst)
+_file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+_root_logger.addHandler(_file_handler)
+
 logger = logging.getLogger(__name__)
 
 ALLOWED_EXTENSIONS = {"pdf"}
@@ -41,6 +69,32 @@ def handle_http_error(exc):
 def handle_generic_error(exc):
     logger.exception("Unhandled exception")
     return jsonify({"error": "Internal server error"}), 500
+
+
+# ---------------------------------------------------------------------------
+# Request logging middleware
+# ---------------------------------------------------------------------------
+
+@app.before_request
+def _start_timer():
+    request._start_time = time.time()
+
+
+@app.after_request
+def _log_request(response):
+    if request.path.startswith("/static/"):
+        return response
+
+    duration_ms = (time.time() - getattr(request, "_start_time", time.time())) * 1000
+    user = session.get("username", "-")
+    level = logging.WARNING if response.status_code >= 400 else logging.INFO
+    logger.log(
+        level,
+        "user=%s %s %s -> %s (%.0fms)",
+        user, request.method, request.path,
+        response.status_code, duration_ms,
+    )
+    return response
 
 
 # ---------------------------------------------------------------------------
