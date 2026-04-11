@@ -1,0 +1,15 @@
+services:
+  app:
+    build: .
+    container_name: pdfparse
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./data/uploads:/app/uploads
+      - ./data/logs:/app/logs
+      - ./data/documents.db:/app/documents.db
+    environment:
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
+      - PORT=8000
+      - FLASK_ENV=production

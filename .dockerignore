@@ -1,0 +1,16 @@
+venv/
+data/
+uploads/
+logs/
+*.db
+__pycache__/
+*.py[cod]
+.git/
+.gitignore
+.env
+.cursorrules
+*.md
+Procfile
+runtime.txt
+railway.json
+tools/

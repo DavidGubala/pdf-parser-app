@@ -1,23 +1,29 @@
-import os
-import re
-import uuid
+import functools
 import json
-import time
-import sqlite3
 import logging
 import logging.handlers
+import os
+import re
+import sqlite3
 import threading
-import functools
-from datetime import datetime, timezone, timedelta
+import time
+import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from flask import (
-    Flask, render_template, request, jsonify,
-    send_from_directory, session, redirect, url_for,
+    Flask,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_from_directory,
+    session,
+    url_for,
 )
 from werkzeug.exceptions import HTTPException
+from werkzeug.security import check_password_hash
 from werkzeug.utils import secure_filename
-from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = Path(__file__).parent / "uploads"
@@ -44,12 +50,18 @@ _root_logger.addHandler(_stream_handler)
 _file_handler = logging.handlers.TimedRotatingFileHandler(
     LOG_DIR / "app.log",
     when="midnight",
-    backupCount=0,   # keep all daily files indefinitely
+    backupCount=0,  # keep all daily files indefinitely
     utc=True,
 )
 _file_handler.suffix = "%Y-%m-%d"
 _file_handler.namer = lambda name: str(LOG_DIR / (name.rsplit(".", 1)[-1] + ".log"))
-_file_handler.rotator = lambda src, dst: Path(src).rename(dst)
+
+
+def _rotator(src: str, dst: str) -> None:
+    Path(src).rename(dst)
+
+
+_file_handler.rotator = _rotator
 _file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
 _root_logger.addHandler(_file_handler)
 
@@ -75,9 +87,10 @@ def handle_generic_error(exc):
 # Request logging middleware
 # ---------------------------------------------------------------------------
 
+
 @app.before_request
 def _start_timer():
-    request._start_time = time.time()
+    setattr(request, "_start_time", time.time())
 
 
 @app.after_request
@@ -91,8 +104,11 @@ def _log_request(response):
     logger.log(
         level,
         "user=%s %s %s -> %s (%.0fms)",
-        user, request.method, request.path,
-        response.status_code, duration_ms,
+        user,
+        request.method,
+        request.path,
+        response.status_code,
+        duration_ms,
     )
     return response
 
@@ -100,6 +116,7 @@ def _log_request(response):
 # ---------------------------------------------------------------------------
 # Authentication
 # ---------------------------------------------------------------------------
+
 
 def login_required(f):
     @functools.wraps(f)
@@ -109,6 +126,7 @@ def login_required(f):
                 return jsonify({"error": "Authentication required"}), 401
             return redirect(url_for("login"))
         return f(*args, **kwargs)
+
     return wrapper
 
 
@@ -155,6 +173,7 @@ def logout():
 # ---------------------------------------------------------------------------
 # Database helpers
 # ---------------------------------------------------------------------------
+
 
 def get_db():
     db = sqlite3.connect(app.config["DATABASE"])
@@ -235,9 +254,10 @@ def _row_to_dict(row):
 # PO extraction helpers
 # ---------------------------------------------------------------------------
 
+
 def _parse_markdown_table(md_text):
     """Parse a markdown table into (headers, rows) where rows are dicts."""
-    lines = [l for l in md_text.strip().split("\n") if l.strip()]
+    lines = [line for line in md_text.strip().split("\n") if line.strip()]
     if len(lines) < 3:
         return [], []
 
@@ -272,9 +292,15 @@ def _try_parse_date(text):
     text = text.strip()
 
     formats = [
-        "%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y",
-        "%B %d, %Y", "%b %d, %Y", "%d %B %Y", "%d %b %Y",
-        "%m/%d/%y", "%Y/%m/%d",
+        "%Y-%m-%d",
+        "%m/%d/%Y",
+        "%m-%d-%Y",
+        "%B %d, %Y",
+        "%b %d, %Y",
+        "%d %B %Y",
+        "%d %b %Y",
+        "%m/%d/%y",
+        "%Y/%m/%d",
     ]
     for fmt in formats:
         try:
@@ -284,6 +310,7 @@ def _try_parse_date(text):
 
     try:
         from dateutil import parser as dateparser
+
         dt = dateparser.parse(text, dayfirst=False)
         if dt:
             return dt.strftime("%Y-%m-%d")
@@ -296,7 +323,9 @@ def _try_parse_date(text):
 def _is_line_item_table(headers):
     """Return True if headers look like a PO line-item table."""
     hl = [h.lower().strip() for h in headers]
-    return any("line" in h for h in hl) and any("part" in h or "description" in h for h in hl)
+    return any("line" in h for h in hl) and any(
+        "part" in h or "description" in h for h in hl
+    )
 
 
 def _extract_item_from_table(headers, rows):
@@ -339,7 +368,11 @@ def _extract_item_from_table(headers, rows):
         desc = re.sub(r"\s*-\s*Shipping.*$", "", raw, flags=re.IGNORECASE).strip()
         desc = re.sub(r"^-\s*", "", desc).strip()
         desc = re.sub(r"\s*-\s*$", "", desc).strip()
-        if desc and not _DATE_RE.match(desc) and desc.lower() not in ("quantity", "tax", ""):
+        if (
+            desc
+            and not _DATE_RE.match(desc)
+            and desc.lower() not in ("quantity", "tax", "")
+        ):
             description = desc
 
     # --- Quantity: numeric part of "EA 1.00" / "EA Each 2.00" ---
@@ -407,7 +440,9 @@ def extract_po_data(doc_id, text_content, tables_data):
                 company_name = m.group(1)
 
         # Order Date
-        m = re.search(r"Order\s*Date:\s*(\d{1,2}/\d{1,2}/\d{2,4})", text_content, re.IGNORECASE)
+        m = re.search(
+            r"Order\s*Date:\s*(\d{1,2}/\d{1,2}/\d{2,4})", text_content, re.IGNORECASE
+        )
         if m:
             po_date = _try_parse_date(m.group(1))
 
@@ -441,21 +476,31 @@ def extract_po_data(doc_id, text_content, tables_data):
         db.execute(
             """INSERT INTO po_items (po_id, item_name, description, due_date, quantity, unit_price)
                VALUES (?, ?, ?, ?, ?, ?)""",
-            (po_id, item["item_name"], item["description"], item["due_date"],
-             item["quantity"], item["unit_price"]),
+            (
+                po_id,
+                item["item_name"],
+                item["description"],
+                item["due_date"],
+                item["quantity"],
+                item["unit_price"],
+            ),
         )
     db.commit()
     db.close()
 
     logger.info(
         "PO extracted for %s: company=%r, po_number=%r, %d item(s)",
-        doc_id, company_name, po_number, len(items),
+        doc_id,
+        company_name,
+        po_number,
+        len(items),
     )
 
 
 # ---------------------------------------------------------------------------
 # PDF processing with Docling (runs in background thread)
 # ---------------------------------------------------------------------------
+
 
 def process_pdf(doc_id: str, filepath: str):
     """Parse a PDF via Docling and store results in the database."""
@@ -495,7 +540,11 @@ def process_pdf(doc_id: str, filepath: str):
         )
         db.commit()
         db.close()
-        logger.info("Docling processing completed for %s — %d table(s) found", doc_id, len(tables))
+        logger.info(
+            "Docling processing completed for %s — %d table(s) found",
+            doc_id,
+            len(tables),
+        )
 
         extract_po_data(doc_id, text_content, tables)
 
@@ -514,6 +563,7 @@ def process_pdf(doc_id: str, filepath: str):
 # Routes — Pages
 # ---------------------------------------------------------------------------
 
+
 @app.route("/")
 @login_required
 def index():
@@ -524,6 +574,7 @@ def index():
 # Routes — API (Documents)
 # ---------------------------------------------------------------------------
 
+
 @app.route("/api/upload", methods=["POST"])
 @login_required
 def upload_file():
@@ -531,15 +582,16 @@ def upload_file():
         return jsonify({"error": "No file provided"}), 400
 
     file = request.files["file"]
-    if file.filename == "":
+    filename = file.filename
+    if not filename:
         return jsonify({"error": "Empty filename"}), 400
 
-    ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if ext not in ALLOWED_EXTENSIONS:
         return jsonify({"error": f"File type '.{ext}' not allowed. Upload a PDF."}), 400
 
     doc_id = uuid.uuid4().hex[:12]
-    safe_name = secure_filename(file.filename)
+    safe_name = secure_filename(filename)
     stored_name = f"{doc_id}_{safe_name}"
     filepath = app.config["UPLOAD_FOLDER"] / stored_name
     file.save(str(filepath))
@@ -555,11 +607,15 @@ def upload_file():
     db.commit()
     db.close()
 
-    thread = threading.Thread(target=process_pdf, args=(doc_id, str(filepath)), daemon=True)
+    thread = threading.Thread(
+        target=process_pdf, args=(doc_id, str(filepath)), daemon=True
+    )
     thread.start()
 
     logger.info("Uploaded %s as %s — processing started", file.filename, doc_id)
-    return jsonify({"id": doc_id, "filename": file.filename, "status": "processing"}), 201
+    return jsonify(
+        {"id": doc_id, "filename": file.filename, "status": "processing"}
+    ), 201
 
 
 @app.route("/api/documents", methods=["GET"])
@@ -580,7 +636,9 @@ def list_documents():
 def get_document(doc_id):
     uid = current_user_id()
     db = get_db()
-    row = db.execute("SELECT * FROM documents WHERE id=? AND user_id=?", (doc_id, uid)).fetchone()
+    row = db.execute(
+        "SELECT * FROM documents WHERE id=? AND user_id=?", (doc_id, uid)
+    ).fetchone()
     db.close()
     if row is None:
         return jsonify({"error": "Document not found"}), 404
@@ -592,11 +650,15 @@ def get_document(doc_id):
 def get_document_pdf(doc_id):
     uid = current_user_id()
     db = get_db()
-    row = db.execute("SELECT filename FROM documents WHERE id=? AND user_id=?", (doc_id, uid)).fetchone()
+    row = db.execute(
+        "SELECT filename FROM documents WHERE id=? AND user_id=?", (doc_id, uid)
+    ).fetchone()
     db.close()
     if row is None:
         return jsonify({"error": "Document not found"}), 404
-    return send_from_directory(app.config["UPLOAD_FOLDER"], row["filename"], mimetype="application/pdf")
+    return send_from_directory(
+        app.config["UPLOAD_FOLDER"], row["filename"], mimetype="application/pdf"
+    )
 
 
 @app.route("/api/documents/<doc_id>", methods=["DELETE"])
@@ -604,7 +666,9 @@ def get_document_pdf(doc_id):
 def delete_document(doc_id):
     uid = current_user_id()
     db = get_db()
-    row = db.execute("SELECT filename FROM documents WHERE id=? AND user_id=?", (doc_id, uid)).fetchone()
+    row = db.execute(
+        "SELECT filename FROM documents WHERE id=? AND user_id=?", (doc_id, uid)
+    ).fetchone()
     if row is None:
         db.close()
         return jsonify({"error": "Document not found"}), 404
@@ -613,7 +677,9 @@ def delete_document(doc_id):
     if filepath.exists():
         filepath.unlink()
 
-    po_rows = db.execute("SELECT id FROM purchase_orders WHERE document_id=?", (doc_id,)).fetchall()
+    po_rows = db.execute(
+        "SELECT id FROM purchase_orders WHERE document_id=?", (doc_id,)
+    ).fetchall()
     for po in po_rows:
         db.execute("DELETE FROM po_items WHERE po_id=?", (po["id"],))
     db.execute("DELETE FROM purchase_orders WHERE document_id=?", (doc_id,))
@@ -628,18 +694,22 @@ def delete_document(doc_id):
 # Routes — API (Purchase Orders / Schedule)
 # ---------------------------------------------------------------------------
 
+
 @app.route("/api/purchase-orders", methods=["GET"])
 @login_required
 def list_purchase_orders():
     uid = current_user_id()
     db = get_db()
-    pos = db.execute("""
+    pos = db.execute(
+        """
         SELECT po.*, d.original_name AS document_name
         FROM purchase_orders po
         JOIN documents d ON po.document_id = d.id
         WHERE d.user_id = ?
         ORDER BY po.created_at DESC
-    """, (uid,)).fetchall()
+    """,
+        (uid,),
+    ).fetchall()
 
     result = []
     for po in pos:
@@ -660,12 +730,15 @@ def list_purchase_orders():
 def get_purchase_order(po_id):
     uid = current_user_id()
     db = get_db()
-    po = db.execute("""
+    po = db.execute(
+        """
         SELECT po.*, d.original_name AS document_name
         FROM purchase_orders po
         JOIN documents d ON po.document_id = d.id
         WHERE po.id = ? AND d.user_id = ?
-    """, (po_id, uid)).fetchone()
+    """,
+        (po_id, uid),
+    ).fetchone()
 
     if po is None:
         db.close()
@@ -688,7 +761,8 @@ def get_schedule():
     uid = current_user_id()
     db = get_db()
 
-    items = db.execute("""
+    items = db.execute(
+        """
         SELECT
             pi.id, pi.item_name, pi.description, pi.due_date,
             pi.quantity, pi.unit_price,
@@ -702,7 +776,9 @@ def get_schedule():
             CASE WHEN pi.due_date = '' OR pi.due_date IS NULL THEN 1 ELSE 0 END,
             pi.due_date ASC,
             po.company_name ASC
-    """, (uid,)).fetchall()
+    """,
+        (uid,),
+    ).fetchall()
 
     total_pos = db.execute(
         "SELECT COUNT(*) AS c FROM purchase_orders po JOIN documents d ON po.document_id = d.id WHERE d.user_id = ?",
@@ -737,25 +813,28 @@ def get_schedule():
 
     db.close()
 
-    return jsonify({
-        "summary": {
-            "total_pos": total_pos,
-            "total_items": total_items,
-            "overdue": overdue,
-            "due_this_week": due_this_week,
-            "upcoming": upcoming,
-        },
-        "items": items_list,
-    })
+    return jsonify(
+        {
+            "summary": {
+                "total_pos": total_pos,
+                "total_items": total_items,
+                "overdue": overdue,
+                "due_this_week": due_this_week,
+                "upcoming": upcoming,
+            },
+            "items": items_list,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
-# Startup
+# Startup — always initialize DB and directories (works with gunicorn too)
 # ---------------------------------------------------------------------------
+
+app.config["UPLOAD_FOLDER"].mkdir(exist_ok=True)
+init_db()
 
 if __name__ == "__main__":
-    app.config["UPLOAD_FOLDER"].mkdir(exist_ok=True)
-    init_db()
     port = int(os.environ.get("PORT", 5000))
     debug = os.environ.get("FLASK_ENV", "development") == "development"
     app.run(debug=debug, host="0.0.0.0", port=port)
