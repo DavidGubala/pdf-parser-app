@@ -23,7 +23,8 @@ function setupThemeToggle() {
   if (!btn) return;
 
   function updateIcon() {
-    const isDark = document.documentElement.getAttribute("data-theme") === "dark";
+    const isDark =
+      document.documentElement.getAttribute("data-theme") === "dark";
     btn.textContent = isDark ? "\u2600" : "\u263E";
     btn.title = isDark ? "Switch to light mode" : "Switch to dark mode";
   }
@@ -37,12 +38,14 @@ function setupThemeToggle() {
     updateIcon();
   });
 
-  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
-    if (localStorage.getItem("theme")) return;
-    const theme = e.matches ? "dark" : "light";
-    document.documentElement.setAttribute("data-theme", theme);
-    updateIcon();
-  });
+  window
+    .matchMedia("(prefers-color-scheme: dark)")
+    .addEventListener("change", (e) => {
+      if (localStorage.getItem("theme")) return;
+      const theme = e.matches ? "dark" : "light";
+      document.documentElement.setAttribute("data-theme", theme);
+      updateIcon();
+    });
 }
 setupThemeToggle();
 
@@ -83,36 +86,36 @@ window.fetch = async function (...args) {
 };
 
 // DOM references — global
-const documentsView   = $("#documents-view");
-const scheduleView    = $("#schedule-view");
+const documentsView = $("#documents-view");
+const scheduleView = $("#schedule-view");
 
 // DOM references — documents
-const dropZone       = $("#drop-zone");
-const fileInput      = $("#file-input");
-const uploadStatus   = $("#upload-status");
-const docsList       = $("#documents-list");
-const detailSection  = $("#detail-section");
-const docsSection    = $("#documents-section");
-const uploadSection  = $("#upload-section");
-const detailHeader   = $("#detail-header");
-const detailContent  = $("#detail-content");
-const backBtn        = $("#back-btn");
-const backSchedBtn   = $("#back-schedule-btn");
-const refreshBtn     = $("#refresh-btn");
+const dropZone = $("#drop-zone");
+const fileInput = $("#file-input");
+const uploadStatus = $("#upload-status");
+const docsList = $("#documents-list");
+const detailSection = $("#detail-section");
+const docsSection = $("#documents-section");
+const uploadSection = $("#upload-section");
+const detailHeader = $("#detail-header");
+const detailContent = $("#detail-content");
+const backBtn = $("#back-btn");
+const backSchedBtn = $("#back-schedule-btn");
+const refreshBtn = $("#refresh-btn");
 
 // DOM references — schedule
-const urgencyFilter      = $("#urgency-filter");
-const companyFilter      = $("#company-filter");
-const dateFrom           = $("#date-from");
-const dateTo             = $("#date-to");
-const clearFiltersBtn    = $("#clear-filters-btn");
+const urgencyFilter = $("#urgency-filter");
+const companyFilter = $("#company-filter");
+const dateFrom = $("#date-from");
+const dateTo = $("#date-to");
+const clearFiltersBtn = $("#clear-filters-btn");
 const refreshScheduleBtn = $("#refresh-schedule-btn");
-const scheduleContainer  = $("#schedule-table-container");
-const scheduleCount      = $("#schedule-count");
-const listSection        = $("#schedule-list-section");
-const calSection         = $("#schedule-calendar-section");
-const calTitle           = $("#cal-title");
-const calGrid            = $("#cal-grid");
+const scheduleContainer = $("#schedule-table-container");
+const scheduleCount = $("#schedule-count");
+const listSection = $("#schedule-list-section");
+const calSection = $("#schedule-calendar-section");
+const calTitle = $("#cal-title");
+const calGrid = $("#cal-grid");
 
 let pollingTimer = null;
 let currentView = "documents";
@@ -131,7 +134,9 @@ $$(".nav-btn").forEach((btn) => {
     if (view === currentView) return;
 
     currentView = view;
-    $$(".nav-btn").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
+    $$(".nav-btn").forEach((b) =>
+      b.classList.toggle("active", b.dataset.view === view),
+    );
 
     if (view === "documents") {
       documentsView.hidden = false;
@@ -253,20 +258,29 @@ function renderDocumentList(docs) {
     })
     .join("");
 
-  docsList.querySelectorAll(".doc-name").forEach((el) =>
-    el.addEventListener("click", () => openDocument(el.dataset.id, "documents"))
-  );
+  docsList
+    .querySelectorAll(".doc-name")
+    .forEach((el) =>
+      el.addEventListener("click", () =>
+        openDocument(el.dataset.id, "documents"),
+      ),
+    );
 
   docsList.querySelectorAll(".delete-btn").forEach((el) =>
     el.addEventListener("click", (e) => {
       e.stopPropagation();
       deleteDocument(el.dataset.id);
-    })
+    }),
   );
 }
 
 function badgeHTML(status) {
-  const labels = { processing: "Processing", completed: "Completed", error: "Error", pending: "Pending" };
+  const labels = {
+    processing: "Processing",
+    completed: "Completed",
+    error: "Error",
+    pending: "Pending",
+  };
   return `<span class="badge badge-${status}">${status === "processing" ? '<span class="spinner"></span> ' : ""}${labels[status] || status}</span>`;
 }
 
@@ -309,6 +323,7 @@ async function openDocument(id, origin) {
     uploadSection.hidden = true;
     docsSection.hidden = true;
     detailSection.hidden = false;
+    detailSection.dataset.docId = id;
 
     backBtn.hidden = detailOrigin === "schedule";
     backSchedBtn.hidden = detailOrigin !== "schedule";
@@ -332,7 +347,9 @@ async function openDocument(id, origin) {
       const poRes = await fetch(`${API}/purchase-orders`);
       const allPOs = await poRes.json();
       poData = allPOs.find((po) => po.document_id === doc.id) || null;
-    } catch (_) { /* PO data fetch is optional */ }
+    } catch (_) {
+      /* PO data fetch is optional */
+    }
 
     renderDetailTab("pdf", doc, poData);
     $$(".tab").forEach((t) => {
@@ -350,10 +367,70 @@ async function openDocument(id, origin) {
 
 function renderDetailTab(tab, doc, poData) {
   if (tab === "pdf") {
-    detailContent.innerHTML =
-      `<iframe class="pdf-viewer" src="${API}/documents/${doc.id}/pdf" title="PDF Viewer"></iframe>`;
+    detailContent.innerHTML = `<iframe class="pdf-viewer" src="${API}/documents/${doc.id}/pdf" title="PDF Viewer"></iframe>`;
   } else if (tab === "po") {
     renderPOTab(poData);
+  }
+}
+
+async function saveCorrections() {
+  const btn = document.getElementById("save-po-btn");
+  const docId = detailSection.dataset.docId;
+
+  const corrections = [];
+
+  // Collect PO meta corrections
+  $$(".po-edit-input").forEach((input) => {
+    if (input.value !== input.dataset.orig) {
+      corrections.push({
+        entity_type: "PO",
+        entity_id: input.dataset.poId,
+        field_name: input.dataset.field,
+        new_value: input.value,
+      });
+    }
+  });
+
+  // Collect Item corrections
+  $$(".item-edit-input").forEach((input) => {
+    if (input.value !== input.dataset.orig) {
+      corrections.push({
+        entity_type: "ITEM",
+        entity_id: input.dataset.itemId,
+        field_name: input.dataset.field,
+        new_value: input.value,
+      });
+    }
+  });
+
+  if (corrections.length === 0) {
+    showUploadStatus("No changes to save.", "info");
+    return;
+  }
+
+  try {
+    btn.disabled = true;
+    btn.textContent = "Saving...";
+
+    const res = await fetch(`${API}/purchase-orders/correct`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        document_id: detailSection.dataset.docId,
+        corrections: corrections,
+      }),
+    });
+
+    if (!res.ok) throw new Error("Failed to save corrections");
+
+    showUploadStatus("Corrections saved successfully!", "success");
+    // Refresh data
+    await openDocument(detailSection.dataset.docId, detailOrigin);
+  } catch (err) {
+    showUploadStatus(err.message, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Save Corrections";
   }
 }
 
@@ -364,18 +441,22 @@ function renderPOTab(poData) {
   }
 
   const metaHTML = `
+    <div class="po-edit-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+      <h3 style="margin:0">Extracted PO Data</h3>
+      <button id="save-po-btn" class="btn btn-primary" onclick="saveCorrections()">Save Corrections</button>
+    </div>
     <div class="po-meta-grid">
       <div class="po-meta-item">
         <span class="label">Company</span>
-        <span class="value">${escapeHTML(poData.company_name || "—")}</span>
+        <input class="po-edit-input" data-po-id="${poData.id}" data-field="company_name" data-orig="${escapeHTML(poData.company_name || "")}" value="${escapeHTML(poData.company_name || "—")}">
       </div>
       <div class="po-meta-item">
         <span class="label">PO Number</span>
-        <span class="value">${escapeHTML(poData.po_number || "—")}</span>
+        <input class="po-edit-input" data-po-id="${poData.id}" data-field="po_number" data-orig="${escapeHTML(poData.po_number || "")}" value="${escapeHTML(poData.po_number || "—")}">
       </div>
       <div class="po-meta-item">
         <span class="label">Order Date</span>
-        <span class="value">${formatDate(poData.po_date) || "—"}</span>
+        <input class="po-edit-input" data-po-id="${poData.id}" data-field="po_date" data-orig="${formatDate(poData.po_date) || ""}" value="${formatDate(poData.po_date) || "—"}">
       </div>
       <div class="po-meta-item">
         <span class="label">Line Items</span>
@@ -390,12 +471,22 @@ function renderPOTab(poData) {
       .map(
         (item) => `
         <tr>
-          <td data-label="Item" class="item-cell">${escapeHTML(item.item_name || "—")}</td>
-          <td data-label="Description">${escapeHTML(item.description || "—")}</td>
-          <td data-label="Due Date">${formatDate(item.due_date)}</td>
-          <td data-label="Qty">${escapeHTML(item.quantity || "—")}</td>
-          <td data-label="Unit Price">${formatPrice(item.unit_price)}</td>
-        </tr>`
+          <td data-label="Item" class="item-cell">
+            <input class="item-edit-input" data-item-id="${item.id}" data-field="item_name" data-orig="${escapeHTML(item.item_name || "")}" value="${escapeHTML(item.item_name || "—")}">
+          </td>
+          <td data-label="Description">
+            <input class="item-edit-input" data-item-id="${item.id}" data-field="description" data-orig="${escapeHTML(item.description || "")}" value="${escapeHTML(item.description || "—")}">
+          </td>
+          <td data-label="Due Date">
+            <input type="date" class="item-edit-input" data-item-id="${item.id}" data-field="due_date" data-orig="${formatDate(item.due_date) || ""}" value="${formatDate(item.due_date) || ""}">
+          </td>
+          <td data-label="Qty" style="text-align:center">
+            <input class="item-edit-input" data-item-id="${item.id}" data-field="quantity" data-orig="${escapeHTML(item.quantity || "")}" value="${escapeHTML(item.quantity || "—")}">
+          </td>
+          <td data-label="Unit Price" style="text-align:right">
+            <input class="item-edit-input" data-item-id="${item.id}" data-field="unit_price" data-orig="${formatPrice(item.unit_price) || ""}" value="${formatPrice(item.unit_price) || "—"}">
+          </td>
+        </tr>`,
       )
       .join("");
 
@@ -447,9 +538,14 @@ function renderScheduleSummary(summary) {
 
 function populateCompanyFilter(items) {
   const prev = companyFilter.value;
-  const companies = [...new Set(items.map((i) => i.company_name).filter(Boolean))].sort();
-  companyFilter.innerHTML = `<option value="all">All companies</option>` +
-    companies.map((c) => `<option value="${escapeHTML(c)}">${escapeHTML(c)}</option>`).join("");
+  const companies = [
+    ...new Set(items.map((i) => i.company_name).filter(Boolean)),
+  ].sort();
+  companyFilter.innerHTML =
+    `<option value="all">All companies</option>` +
+    companies
+      .map((c) => `<option value="${escapeHTML(c)}">${escapeHTML(c)}</option>`)
+      .join("");
   if (prev && prev !== "all") companyFilter.value = prev;
 }
 
@@ -489,16 +585,23 @@ function applyFiltersAndRender() {
 
 function renderScheduleTable(items) {
   if (!items.length) {
-    const msg = scheduleData && scheduleData.items.length
-      ? "No items match the current filters."
-      : "No purchase order items yet. Upload a PDF to get started.";
+    const msg =
+      scheduleData && scheduleData.items.length
+        ? "No items match the current filters."
+        : "No purchase order items yet. Upload a PDF to get started.";
     scheduleContainer.innerHTML = `<p class="empty-state">${msg}</p>`;
     return;
   }
 
   const rows = items
     .map((item) => {
-      const urgencyLabel = { overdue: "Overdue", due_soon: "Due Soon", upcoming: "Upcoming", no_date: "No Date" }[item.urgency] || item.urgency;
+      const urgencyLabel =
+        {
+          overdue: "Overdue",
+          due_soon: "Due Soon",
+          upcoming: "Upcoming",
+          no_date: "No Date",
+        }[item.urgency] || item.urgency;
       return `
         <tr>
           <td data-label="Status">
@@ -540,12 +643,14 @@ function renderScheduleTable(items) {
 
   scheduleContainer.querySelectorAll(".doc-link").forEach((el) =>
     el.addEventListener("click", () => {
-      $$(".nav-btn").forEach((b) => b.classList.toggle("active", b.dataset.view === "documents"));
+      $$(".nav-btn").forEach((b) =>
+        b.classList.toggle("active", b.dataset.view === "documents"),
+      );
       currentView = "documents";
       documentsView.hidden = false;
       scheduleView.hidden = true;
       openDocument(el.dataset.docId, "schedule");
-    })
+    }),
   );
 }
 
@@ -561,7 +666,20 @@ function initCalMonth() {
 initCalMonth();
 
 function renderCalendar(items) {
-  const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  const monthNames = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+  ];
   calTitle.textContent = `${monthNames[calMonth]} ${calYear}`;
 
   const firstDay = new Date(calYear, calMonth, 1);
@@ -577,8 +695,10 @@ function renderCalendar(items) {
     (itemsByDate[it.due_date] = itemsByDate[it.due_date] || []).push(it);
   });
 
-  const dayHeaders = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
-  let html = dayHeaders.map((d) => `<div class="cal-day-header">${d}</div>`).join("");
+  const dayHeaders = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  let html = dayHeaders
+    .map((d) => `<div class="cal-day-header">${d}</div>`)
+    .join("");
 
   for (let i = 0; i < startDow; i++) {
     html += `<div class="cal-cell cal-cell--empty"></div>`;
@@ -590,14 +710,19 @@ function renderCalendar(items) {
     const dayItems = itemsByDate[dateStr] || [];
 
     const previewMax = 2;
-    const previewHTML = dayItems.slice(0, previewMax).map((it) =>
-      `<div class="cal-chip cal-chip--${it.urgency}">
+    const previewHTML = dayItems
+      .slice(0, previewMax)
+      .map(
+        (it) =>
+          `<div class="cal-chip cal-chip--${it.urgency}">
         <span class="cal-chip-name">${escapeHTML(it.item_name)}</span>
-      </div>`
-    ).join("");
+      </div>`,
+      )
+      .join("");
 
     const moreCount = dayItems.length - previewMax;
-    const moreHTML = moreCount > 0 ? `<div class="cal-more">+${moreCount} more</div>` : "";
+    const moreHTML =
+      moreCount > 0 ? `<div class="cal-more">+${moreCount} more</div>` : "";
 
     html += `
       <div class="cal-cell${isToday ? " cal-cell--today" : ""}${dayItems.length ? " cal-cell--has-items" : ""}"
@@ -637,7 +762,11 @@ function closeCalPopover() {
 }
 
 function onPopoverOutsideClick(e) {
-  if (activePopover && !activePopover.contains(e.target) && !e.target.closest(".cal-cell[data-date]")) {
+  if (
+    activePopover &&
+    !activePopover.contains(e.target) &&
+    !e.target.closest(".cal-cell[data-date]")
+  ) {
     closeCalPopover();
   }
 }
@@ -646,9 +775,16 @@ function openCalPopover(cell, dateStr, dayItems) {
   closeCalPopover();
 
   const label = formatDate(dateStr);
-  const rows = dayItems.map((it) => {
-    const urgencyLabel = { overdue: "Overdue", due_soon: "Due Soon", upcoming: "Upcoming", no_date: "No Date" }[it.urgency] || "";
-    return `
+  const rows = dayItems
+    .map((it) => {
+      const urgencyLabel =
+        {
+          overdue: "Overdue",
+          due_soon: "Due Soon",
+          upcoming: "Upcoming",
+          no_date: "No Date",
+        }[it.urgency] || "";
+      return `
       <div class="cal-pop-item cal-pop-item--${it.urgency}" data-doc-id="${it.document_id}">
         <div class="cal-pop-item-top">
           <span class="urgency-dot urgency-dot--${it.urgency}"></span>
@@ -662,7 +798,8 @@ function openCalPopover(cell, dateStr, dayItems) {
           ${it.quantity ? `<span>Qty ${escapeHTML(it.quantity)}</span>` : ""}
         </div>
       </div>`;
-  }).join("");
+    })
+    .join("");
 
   const pop = document.createElement("div");
   pop.className = "cal-popover";
@@ -688,7 +825,9 @@ function openCalPopover(cell, dateStr, dayItems) {
     el.addEventListener("click", (e) => {
       e.stopPropagation();
       closeCalPopover();
-      $$(".nav-btn").forEach((b) => b.classList.toggle("active", b.dataset.view === "documents"));
+      $$(".nav-btn").forEach((b) =>
+        b.classList.toggle("active", b.dataset.view === "documents"),
+      );
       currentView = "documents";
       documentsView.hidden = false;
       scheduleView.hidden = true;
@@ -696,17 +835,26 @@ function openCalPopover(cell, dateStr, dayItems) {
     });
   });
 
-  setTimeout(() => document.addEventListener("click", onPopoverOutsideClick, true), 0);
+  setTimeout(
+    () => document.addEventListener("click", onPopoverOutsideClick, true),
+    0,
+  );
 }
 
 $("#cal-prev").addEventListener("click", () => {
   calMonth--;
-  if (calMonth < 0) { calMonth = 11; calYear--; }
+  if (calMonth < 0) {
+    calMonth = 11;
+    calYear--;
+  }
   applyFiltersAndRender();
 });
 $("#cal-next").addEventListener("click", () => {
   calMonth++;
-  if (calMonth > 11) { calMonth = 0; calYear++; }
+  if (calMonth > 11) {
+    calMonth = 0;
+    calYear++;
+  }
   applyFiltersAndRender();
 });
 $("#cal-today").addEventListener("click", () => {
@@ -723,7 +871,9 @@ $$(".view-btn").forEach((btn) => {
     const mode = btn.dataset.mode;
     if (mode === scheduleMode) return;
     scheduleMode = mode;
-    $$(".view-btn").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
+    $$(".view-btn").forEach((b) =>
+      b.classList.toggle("active", b.dataset.mode === mode),
+    );
     listSection.hidden = mode !== "list";
     calSection.hidden = mode !== "calendar";
     applyFiltersAndRender();
@@ -747,7 +897,11 @@ function formatDate(dateStr) {
   if (!dateStr) return "—";
   try {
     const d = new Date(dateStr + "T00:00:00");
-    return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    return d.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
   } catch {
     return escapeHTML(dateStr);
   }
@@ -757,7 +911,13 @@ function formatPrice(val) {
   if (!val) return "—";
   const n = parseFloat(val);
   if (isNaN(n)) return escapeHTML(val);
-  return "$" + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return (
+    "$" +
+    n.toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -790,7 +950,9 @@ backSchedBtn.addEventListener("click", () => {
   uploadSection.hidden = false;
   docsSection.hidden = false;
   currentView = "schedule";
-  $$(".nav-btn").forEach((b) => b.classList.toggle("active", b.dataset.view === "schedule"));
+  $$(".nav-btn").forEach((b) =>
+    b.classList.toggle("active", b.dataset.view === "schedule"),
+  );
   documentsView.hidden = true;
   scheduleView.hidden = false;
   loadSchedule();

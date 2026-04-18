@@ -6,16 +6,16 @@ This document outlines the phased approach to integrating a local LLM (via Ollam
 **Goal**: Establish a stable connection between the Dockerized application and the local Ollama server to perform basic structured extraction.
 
 ### 1.1 Infrastructure & Configuration
-- [ ] **Environment Variables**: Add `OLLAMA_BASE_URL` and `OLLAMA_MODEL` to the `.env` file.
-- [ ] **Docker Networking**: Update `docker-compose.yml` with `extra_hosts: ["host.docker.internal:host-gateway"]` to allow the container to communicate with the host machine.
+- [X] **Environment Variables**: Add `OLLAMA_BASE_URL` and `OLLAMA_MODEL` to the `.env` file.
+- [X] **Docker Networking**: Update `docker-compose.yml` with `extra_hosts: ["host.docker.internal:host-gateway"]` to allow the container to communicate with the host machine.
 - [ ] **Ollama Setup**: (User Task) Install Ollama, pull recommended models (Qwen 2.5 or Gemma 4), and set `OLLAMA_HOST=0.0.0.0`.
 
 ### 1.2 Backend Implementation
-- [ ] **LLM Utility**: Implement `query_ollama()` in `app.py` to handle API requests, set the `format: "json"` flag, and manage timeouts.
-- [ ] **Prompt Engineering**: 
+- [X] **LLM Utility**: Implement `query_ollama()` in `app.py` to handle API requests, set the `format: "json"` flag, and manage timeouts.
+- [X] **Prompt Engineering**: 
     - Define a `SYSTEM_PROMPT` specifying the required JSON schema (Company, PO#, Date, Items).
     - Create a prompt builder that aggregates **Unstructured Text**, **Docling Markdown**, and **Docling Tables**.
-- [ ] **Workflow Integration**: 
+- [X] **Workflow Integration**: 
     - Update `process_pdf` to trigger the LLM extraction immediately after data preparation.
     - Implement JSON parsing logic to map LLM output to the `purchase_orders` and `po_items` database tables.
 

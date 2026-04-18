@@ -239,6 +239,20 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # column already exists
 
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS po_corrections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            document_id TEXT NOT NULL,
+            entity_type TEXT NOT NULL, -- 'PO' or 'ITEM'
+            entity_id TEXT NOT NULL,   -- po_id or po_item_id
+            field_name TEXT NOT NULL,
+            original_value TEXT,
+            corrected_value TEXT,
+            timestamp TEXT NOT NULL,
+            FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+        )
+    """)
+
     try:
         db.execute("ALTER TABLE documents ADD COLUMN unstructured_text TEXT")
         logger.info("Migrated documents table: added unstructured_text column")
@@ -712,6 +726,77 @@ def get_schedule():
         items_list.append(d)
 
     db.close()
+
+
+@app.route("/api/purchase-orders/correct", methods=["POST"])
+@login_required
+def correct_purchase_order():
+    data = request.get_json()
+    doc_id = data.get("document_id")
+    corrections = data.get("corrections", [])
+
+    if not doc_id:
+        return jsonify({"error": "Missing document_id"}), 400
+
+    db = get_db()
+    # Verify ownership
+    doc = db.execute("SELECT user_id FROM documents WHERE id = ?", (doc_id,)).fetchone()
+    if not doc or doc["user_id"] != current_user_id():
+        db.close()
+        return jsonify({"error": "Unauthorized"}), 403
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    try:
+        for corr in corrections:
+            entity_type = corr.get("entity_type")
+            entity_id = corr.get("entity_id")
+            field = corr.get("field_name")
+            new_val = corr.get("new_value")
+
+            if entity_type == "PO":
+                # Get original value
+                row = db.execute(
+                    "SELECT ? FROM purchase_orders WHERE id = ?", (field, entity_id)
+                ).fetchone()
+                original_val = row[0] if row else None
+
+                # Update
+                db.execute(
+                    f"UPDATE purchase_orders SET {field} = ? WHERE id = ?",
+                    (new_val, entity_id),
+                )
+            elif entity_type == "ITEM":
+                # Get original value
+                row = db.execute(
+                    f"SELECT {field} FROM po_items WHERE id = ?", (entity_id,)
+                ).fetchone()
+                original_val = row[0] if row else None
+
+                # Update
+                db.execute(
+                    f"UPDATE po_items SET {field} = ? WHERE id = ?",
+                    (new_val, entity_id),
+                )
+            else:
+                continue
+
+            # Log correction
+            db.execute(
+                """INSERT INTO po_corrections
+                   (document_id, entity_type, entity_id, field_name, original_value, corrected_value, timestamp)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (doc_id, entity_type, entity_id, field, original_val, new_val, now),
+            )
+
+        db.commit()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        logger.exception("Correction failed: %s", e)
+        db.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
 
     return jsonify(
         {
