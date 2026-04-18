@@ -328,13 +328,38 @@ def query_ollama(prompt, system_prompt=SYSTEM_PROMPT):
         return None
 
 
-def build_extraction_prompt(text_content, tables_json, unstructured_text):
-    """Combine all available data sources into a single prompt for the LLM."""
+def get_relevant_corrections(doc_id):
+    """Retrieve recent corrections to use as few-shot examples."""
+    db = get_db()
+    # Get the last 5 corrections to provide a variety of 'lessons'
+    corrections = db.execute(
+        "SELECT field_name, original_value, corrected_value FROM po_corrections ORDER BY timestamp DESC LIMIT 5"
+    ).fetchall()
+    db.close()
+
+    if not corrections:
+        return ""
+
+    lessons = [
+        "The following mistakes were made in previous extractions. Please avoid them:"
+    ]
+    for c in corrections:
+        lessons.append(
+            f"- Field '{c['field_name']}': previously extracted as '{c['original_value']}', but corrected to '{c['corrected_value']}'"
+        )
+
+    return "\n".join(lessons)
+
+
+def build_extraction_prompt(
+    text_content, tables_json, unstructured_text, lessons_learned=""
+):
+    """Combine all available data sources and lessons into a single prompt for the LLM."""
     tables = json.loads(tables_json) if isinstance(tables_json, str) else tables_json
     tables_md = "\n\n".join([t.get("markdown", "") for t in tables])
 
     prompt = f"""Please extract the PO data from the following sources:
-
+{f"\n### LESSONS FROM PREVIOUS EXTRACTIONS\n{lessons_learned}\n" if lessons_learned else ""}
 ### UNSTRUCTURED TEXT
 {unstructured_text}
 
@@ -351,7 +376,12 @@ def extract_po_with_llm(doc_id, text_content, tables_json, unstructured_text):
     """Orchestrate the LLM extraction and persist results to the database."""
     logger.info("Starting LLM extraction for document %s", doc_id)
 
-    prompt = build_extraction_prompt(text_content, tables_json, unstructured_text)
+    # Retrieve lessons learned from the correction log
+    lessons = get_relevant_corrections(doc_id)
+
+    prompt = build_extraction_prompt(
+        text_content, tables_json, unstructured_text, lessons
+    )
     raw_response = query_ollama(prompt)
 
     if not raw_response:
@@ -797,6 +827,77 @@ def correct_purchase_order():
         return jsonify({"error": str(e)}), 500
     finally:
         db.close()
+
+
+@app.route("/api/corrections/export")
+@login_required
+def export_corrections():
+    db = get_db()
+    corrections = db.execute(
+        "SELECT * FROM po_corrections ORDER BY timestamp DESC"
+    ).fetchall()
+    db.close()
+
+    return jsonify([dict(c) for c in corrections])
+
+
+@app.route("/api/schedule", methods=["GET"])
+@login_required
+def get_schedule():
+    uid = current_user_id()
+    db = get_db()
+
+    items = db.execute(
+        """
+        SELECT
+            pi.id, pi.item_name, pi.description, pi.due_date,
+            pi.quantity, pi.unit_price,
+            po.company_name, po.po_number, po.po_date, po.document_id,
+            d.original_name AS document_name
+        FROM po_items pi
+        JOIN purchase_orders po ON pi.po_id = po.id
+        JOIN documents d ON po.document_id = d.id
+        WHERE d.user_id = ?
+        ORDER BY
+            CASE WHEN pi.due_date = '' OR pi.due_date IS NULL THEN 1 ELSE 0 END,
+            pi.due_date ASC,
+            po.company_name ASC
+    """,
+        (uid,),
+    ).fetchall()
+
+    total_pos = db.execute(
+        "SELECT COUNT(*) AS c FROM purchase_orders po JOIN documents d ON po.document_id = d.id WHERE d.user_id = ?",
+        (uid,),
+    ).fetchone()["c"]
+    total_items = len(items)
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    week_end = (datetime.now(timezone.utc) + timedelta(days=7)).strftime("%Y-%m-%d")
+
+    overdue = 0
+    due_this_week = 0
+    upcoming = 0
+
+    items_list = []
+    for item in items:
+        d = dict(item)
+        due = d.get("due_date", "")
+        if due:
+            if due < today:
+                d["urgency"] = "overdue"
+                overdue += 1
+            elif due <= week_end:
+                d["urgency"] = "due_soon"
+                due_this_week += 1
+            else:
+                d["urgency"] = "upcoming"
+                upcoming += 1
+        else:
+            d["urgency"] = "no_date"
+        items_list.append(d)
+
+    db.close()
 
     return jsonify(
         {

@@ -8,7 +8,7 @@ This document outlines the phased approach to integrating a local LLM (via Ollam
 ### 1.1 Infrastructure & Configuration
 - [X] **Environment Variables**: Add `OLLAMA_BASE_URL` and `OLLAMA_MODEL` to the `.env` file.
 - [X] **Docker Networking**: Update `docker-compose.yml` with `extra_hosts: ["host.docker.internal:host-gateway"]` to allow the container to communicate with the host machine.
-- [ ] **Ollama Setup**: (User Task) Install Ollama, pull recommended models (Qwen 2.5 or Gemma 4), and set `OLLAMA_HOST=0.0.0.0`.
+- [X] **Ollama Setup**: (User Task) Install Ollama, pull recommended models (Qwen 2.5 or Gemma 4), and set `OLLAMA_HOST=0.0.0.0`.
 
 ### 1.2 Backend Implementation
 - [X] **LLM Utility**: Implement `query_ollama()` in `app.py` to handle API requests, set the `format: "json"` flag, and manage timeouts.
@@ -25,7 +25,7 @@ This document outlines the phased approach to integrating a local LLM (via Ollam
 **Goal**: Implement a Human-in-the-Loop (HITL) interface to allow users to verify and correct AI-extracted data.
 
 ### 2.1 Data Persistence
-- [ ] **Feedback Schema**: Create a `po_corrections` table to log:
+- [X] **Feedback Schema**: Create a `po_corrections` table to log:
     - `document_id`
     - `field_name` (e.g., "due_date", "quantity")
     - `original_value`
@@ -33,11 +33,11 @@ This document outlines the phased approach to integrating a local LLM (via Ollam
     - `timestamp`
 
 ### 2.2 Frontend Enhancements
-- [ ] **Edit Mode**: Update the PO Data tab in the document detail view to allow inline editing of extracted fields.
-- [ ] **Correction UI**: Add a "Save Corrections" action that visually confirms the update.
+- [X] **Edit Mode**: Update the PO Data tab in the document detail view to allow inline editing of extracted fields.
+- [X] **Correction UI**: Add a "Save Corrections" action that visually confirms the update.
 
 ### 2.3 API Development
-- [ ] **Correction Endpoint**: Create a `/api/purchase-orders/correct` endpoint that:
+- [X] **Correction Endpoint**: Create a `/api/purchase-orders/correct` endpoint that:
     1. Updates the primary PO/Item records.
     2. Logs the change in the `po_corrections` table for future training.
 
@@ -47,12 +47,12 @@ This document outlines the phased approach to integrating a local LLM (via Ollam
 **Goal**: Use the collected correction data to automatically improve the model's accuracy over time.
 
 ### 3.1 Prompt Optimization
-- [ ] **Few-Shot Injection**: Modify the prompt builder to query the `po_corrections` table and inject 2-3 relevant "Mistake $\rightarrow$ Correction" examples into the prompt.
-- [ ] **Dynamic Retrieval**: Implement a basic similarity search to ensure the examples provided to the LLM are relevant to the current document's format.
+- [X] **Few-Shot Injection**: Modify the prompt builder to query the `po_corrections` table and inject 2-3 relevant "Mistake $\rightarrow$ Correction" examples into the prompt.
+- [X] **Dynamic Retrieval**: Implement a basic similarity search to ensure the examples provided to the LLM are relevant to the current document's format.
 
 ### 3.2 Evaluation & Monitoring
-- [ ] **Accuracy Tracking**: Create a simple internal metric to track the "Correction Rate" (percentage of fields changed by users) to quantify model improvement.
-- [ ] **Dataset Export**: Implement a utility to export the `po_corrections` table into a JSONL format suitable for PEFT/LoRA fine-tuning.
+- [X] **Accuracy Tracking**: Create a simple internal metric to track the "Correction Rate" (percentage of fields changed by users) to quantify model improvement.
+- [X] **Dataset Export**: Implement a utility to export the `po_corrections` table into a JSONL format suitable for PEFT/LoRA fine-tuning.
 
 ---
 
