@@ -253,6 +253,18 @@ def init_db():
         )
     """)
 
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS llm_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            document_id TEXT NOT NULL,
+            prompt TEXT,
+            response TEXT,
+            latency REAL,
+            timestamp TEXT NOT NULL,
+            FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+        )
+    """)
+
     try:
         db.execute("ALTER TABLE documents ADD COLUMN unstructured_text TEXT")
         logger.info("Migrated documents table: added unstructured_text column")
@@ -382,7 +394,20 @@ def extract_po_with_llm(doc_id, text_content, tables_json, unstructured_text):
     prompt = build_extraction_prompt(
         text_content, tables_json, unstructured_text, lessons
     )
+
+    start_time = time.time()
     raw_response = query_ollama(prompt)
+    latency = time.time() - start_time
+
+    # Log the raw interaction for debugging and auditing
+    db = get_db()
+    db.execute(
+        """INSERT INTO llm_logs (document_id, prompt, response, latency, timestamp)
+           VALUES (?, ?, ?, ?, ?)""",
+        (doc_id, prompt, raw_response, latency, datetime.now(timezone.utc).isoformat()),
+    )
+    db.commit()
+    db.close()
 
     if not raw_response:
         logger.error("No response from LLM for document %s", doc_id)
@@ -436,13 +461,21 @@ def extract_po_with_llm(doc_id, text_content, tables_json, unstructured_text):
 
 def process_pdf(doc_id: str, filepath: str):
     """Parse a PDF via Docling and store results in the database."""
-    logger.info("Starting Docling processing for %s (%s)", doc_id, filepath)
+    logger.info("Starting PDF processing for %s (%s)", doc_id, filepath)
+    overall_start = time.time()
     try:
+        # --- Docling Phase ---
+        docling_start = time.time()
+        logger.info("Running Docling conversion for %s...", doc_id)
         from docling.document_converter import DocumentConverter
 
         converter = DocumentConverter()
         result = converter.convert(filepath)
         doc = result.document
+        docling_latency = time.time() - docling_start
+        logger.info(
+            "Docling conversion completed for %s in %.2fs", doc_id, docling_latency
+        )
 
         text_content = doc.export_to_markdown()
 
@@ -466,11 +499,17 @@ def process_pdf(doc_id: str, filepath: str):
         # Get flat text reading using Unstructured
         unstructured_text = ""
         try:
+            unstructured_start = time.time()
             from unstructured.partition.pdf import partition_pdf
 
             elements = partition_pdf(filename=filepath)
             unstructured_text = "\n\n".join([str(el) for el in elements])
-            logger.info("Unstructured processing completed for %s", doc_id)
+            unstructured_latency = time.time() - unstructured_start
+            logger.info(
+                "Unstructured processing completed for %s in %.2fs",
+                doc_id,
+                unstructured_latency,
+            )
         except Exception as ue:
             logger.warning("Unstructured processing failed for %s: %s", doc_id, ue)
 
@@ -483,9 +522,11 @@ def process_pdf(doc_id: str, filepath: str):
         )
         db.commit()
         db.close()
+        overall_latency = time.time() - overall_start
         logger.info(
-            "Processing completed for %s — %d table(s) found",
+            "Processing completed for %s in %.2fs — %d table(s) found",
             doc_id,
+            overall_latency,
             len(tables),
         )
 
