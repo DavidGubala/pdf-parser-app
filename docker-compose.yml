@@ -9,7 +9,11 @@ services:
       - ./data/uploads:/app/uploads
       - ./data/logs:/app/logs
       - ./data/documents.db:/app/documents.db
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
       - PORT=8000
       - FLASK_ENV=production
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - OLLAMA_MODEL=qwen2.5:7b

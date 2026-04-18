@@ -204,6 +204,7 @@ def init_db():
             page_count INTEGER,
             text_content TEXT,
             tables_json TEXT,
+            unstructured_text TEXT,
             images_json TEXT,
             FOREIGN KEY (user_id) REFERENCES users(id)
         )
@@ -237,6 +238,12 @@ def init_db():
         logger.info("Migrated documents table: added user_id column")
     except sqlite3.OperationalError:
         pass  # column already exists
+
+    try:
+        db.execute("ALTER TABLE documents ADD COLUMN unstructured_text TEXT")
+        logger.info("Migrated documents table: added unstructured_text column")
+    except sqlite3.OperationalError:
+        pass  # column already exists
     db.commit()
     db.close()
 
@@ -255,246 +262,127 @@ def _row_to_dict(row):
 # ---------------------------------------------------------------------------
 
 
-def _parse_markdown_table(md_text):
-    """Parse a markdown table into (headers, rows) where rows are dicts."""
-    lines = [line for line in md_text.strip().split("\n") if line.strip()]
-    if len(lines) < 3:
-        return [], []
+# ---------------------------------------------------------------------------
+# LLM Extraction Logic (Ollama Integration)
+# ---------------------------------------------------------------------------
 
-    def split_row(line):
-        parts = line.split("|")
-        if parts and not parts[0].strip():
-            parts = parts[1:]
-        if parts and not parts[-1].strip():
-            parts = parts[:-1]
-        return [p.strip() for p in parts]
+SYSTEM_PROMPT = """You are a professional Purchase Order (PO) extraction expert.
+Your task is to extract structured data from the provided document content.
+You will be provided with three versions of the document:
+1. Unstructured Text: A flat reading of the document.
+2. Markdown Text: A structured markdown representation.
+3. Tables: Specific tables extracted as markdown.
 
-    headers = split_row(lines[0])
-    rows = []
-    for line in lines[2:]:
-        cleaned = line.replace("|", "").replace("-", "").replace(":", "").strip()
-        if not cleaned:
-            continue
-        cells = split_row(line)
-        if cells:
-            row_dict = {}
-            for i, h in enumerate(headers):
-                row_dict[h] = cells[i] if i < len(cells) else ""
-            rows.append(row_dict)
+Extract the following information into a strict JSON format:
+- company_name: The name of the company that issued the PO (the buyer/customer).
+- po_number: The Purchase Order number.
+- po_date: The date of the PO in YYYY-MM-DD format.
+- items: A list of line items, each containing:
+    - item_name: The part number or primary identifier.
+    - description: The full description of the item.
+    - quantity: The ordered quantity.
+    - unit_price: The price per unit.
+    - due_date: The required delivery date in YYYY-MM-DD format.
 
-    return headers, rows
+If a value is not found, use null. Return ONLY the JSON object.
+"""
 
 
-def _try_parse_date(text):
-    """Best-effort parse of a date string into YYYY-MM-DD."""
-    if not text or not text.strip():
-        return ""
-    text = text.strip()
-
-    formats = [
-        "%Y-%m-%d",
-        "%m/%d/%Y",
-        "%m-%d-%Y",
-        "%B %d, %Y",
-        "%b %d, %Y",
-        "%d %B %Y",
-        "%d %b %Y",
-        "%m/%d/%y",
-        "%Y/%m/%d",
-    ]
-    for fmt in formats:
-        try:
-            return datetime.strptime(text, fmt).strftime("%Y-%m-%d")
-        except ValueError:
-            continue
-
-    try:
-        from dateutil import parser as dateparser
-
-        dt = dateparser.parse(text, dayfirst=False)
-        if dt:
-            return dt.strftime("%Y-%m-%d")
-    except Exception:
-        pass
-
-    return text
-
-
-def _is_line_item_table(headers):
-    """Return True if headers look like a PO line-item table."""
-    hl = [h.lower().strip() for h in headers]
-    return any("line" in h for h in hl) and any(
-        "part" in h or "description" in h for h in hl
+def query_ollama(prompt, system_prompt=SYSTEM_PROMPT):
+    """Query the local Ollama server for structured extraction."""
+    url = (
+        os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434") + "/api/chat"
     )
+    model = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
 
-
-def _extract_item_from_table(headers, rows):
-    """Extract one item from a multi-row PO line-item table.
-
-    Expected row layout (nVenia-style):
-      Row 0  : Line#, Part Number (+ optional desc), Qty, Unit Price, Ext Price
-      Row 1+ : Description fragments, shipping labels, due dates scattered
-    """
-    if not rows:
-        return None
-
-    col = {}
-    for h in headers:
-        hl = h.lower().strip()
-        if "part" in hl or "description" in hl:
-            col["part"] = h
-        elif "order qty" in hl or hl == "qty":
-            col["qty"] = h
-        elif "unit price" in hl:
-            col["price"] = h
-        elif hl == "line":
-            col["line"] = h
-
-    first = rows[0]
-
-    # --- Part number + possible inline description ---
-    part_text = first.get(col.get("part", ""), "").strip()
-    item_name = part_text
-    description = ""
-
-    pm = re.match(r"^([A-Z0-9][-A-Z0-9]*)\s+(.+)$", part_text, re.IGNORECASE)
-    if pm:
-        item_name = pm.group(1)
-        description = pm.group(2).strip()
-
-    # --- Description from later rows (Line column often has it) ---
-    if not description and len(rows) > 1 and "line" in col:
-        raw = rows[1].get(col["line"], "").strip()
-        desc = re.sub(r"\s*-\s*Shipping.*$", "", raw, flags=re.IGNORECASE).strip()
-        desc = re.sub(r"^-\s*", "", desc).strip()
-        desc = re.sub(r"\s*-\s*$", "", desc).strip()
-        if (
-            desc
-            and not _DATE_RE.match(desc)
-            and desc.lower() not in ("quantity", "tax", "")
-        ):
-            description = desc
-
-    # --- Quantity: numeric part of "EA 1.00" / "EA Each 2.00" ---
-    qty_raw = first.get(col.get("qty", ""), "").strip()
-    qm = re.search(r"(\d+\.?\d*)", qty_raw)
-    quantity = qm.group(1) if qm else qty_raw
-
-    # --- Unit price: number from "42.00000/1" ---
-    price_raw = first.get(col.get("price", ""), "").strip()
-    upm = re.search(r"([\d,]+\.?\d*)", price_raw)
-    unit_price = ""
-    if upm:
-        try:
-            unit_price = f"{float(upm.group(1).replace(',', '')):.2f}"
-        except ValueError:
-            unit_price = upm.group(1)
-
-    # --- Due date: scan every cell in rows after the first for a date ---
-    due_date = ""
-    for row in rows[1:]:
-        for val in row.values():
-            dm = _DATE_RE.search(str(val))
-            if dm:
-                due_date = _try_parse_date(dm.group(1))
-                break
-        if due_date:
-            break
-
-    if not item_name:
-        return None
-
-    return {
-        "item_name": item_name,
-        "description": description,
-        "due_date": due_date,
-        "quantity": quantity,
-        "unit_price": unit_price,
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
+        "format": "json",
     }
 
+    try:
+        response = requests.post(url, json=payload, timeout=60)
+        response.raise_for_status()
+        return response.json()["message"]["content"]
+    except Exception as e:
+        logger.error("Ollama API error: %s", e)
+        return None
 
-def extract_po_data(doc_id, text_content, tables_data):
-    """Extract Purchase Order metadata + line items and persist to DB."""
-    logger.info("Extracting PO data for document %s", doc_id)
 
-    company_name = ""
-    po_number = ""
-    po_date = ""
-    items = []
+def build_extraction_prompt(text_content, tables_json, unstructured_text):
+    """Combine all available data sources into a single prompt for the LLM."""
+    tables = json.loads(tables_json) if isinstance(tables_json, str) else tables_json
+    tables_md = "\n\n".join([t.get("markdown", "") for t in tables])
 
-    # --- metadata from the full markdown text ---
-    if text_content:
-        # PO Number — "PO Number: | 378201" or inline "PO Number: 378201"
-        m = re.search(r"PO\s+Number\s*[:\s|]+\s*(\d+)", text_content, re.IGNORECASE)
-        if m:
-            po_number = m.group(1)
+    prompt = f"""Please extract the PO data from the following sources:
 
-        # Customer/buyer — the company that issued the PO (Ship To)
-        m = re.search(r"Ship\s*To:\s*([A-Za-z][\w]+)", text_content, re.IGNORECASE)
-        if m:
-            company_name = m.group(1)
+### UNSTRUCTURED TEXT
+{unstructured_text}
 
-        if not company_name:
-            m = re.search(r"Bill\s*To:\s*([A-Za-z][\w]+)", text_content, re.IGNORECASE)
-            if m:
-                company_name = m.group(1)
+### MARKDOWN STRUCTURE
+{text_content}
 
-        # Order Date
-        m = re.search(
-            r"Order\s*Date:\s*(\d{1,2}/\d{1,2}/\d{2,4})", text_content, re.IGNORECASE
-        )
-        if m:
-            po_date = _try_parse_date(m.group(1))
+### EXTRACTED TABLES
+{tables_md}
+"""
+    return prompt
 
-    # --- line items: each item is its own table with multi-row layout ---
-    if tables_data:
-        for table_info in tables_data:
-            md = table_info.get("markdown", "")
-            if not md:
-                continue
-            headers, rows = _parse_markdown_table(md)
-            if not headers or not rows:
-                continue
-            if not _is_line_item_table(headers):
-                continue
 
-            item = _extract_item_from_table(headers, rows)
-            if item:
-                items.append(item)
+def extract_po_with_llm(doc_id, text_content, tables_json, unstructured_text):
+    """Orchestrate the LLM extraction and persist results to the database."""
+    logger.info("Starting LLM extraction for document %s", doc_id)
 
-    # --- persist ---
-    po_id = uuid.uuid4().hex[:12]
-    now = datetime.now(timezone.utc).isoformat()
+    prompt = build_extraction_prompt(text_content, tables_json, unstructured_text)
+    raw_response = query_ollama(prompt)
 
-    db = get_db()
-    db.execute(
-        """INSERT INTO purchase_orders (id, document_id, company_name, po_number, po_date, created_at)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (po_id, doc_id, company_name, po_number, po_date, now),
-    )
-    for item in items:
+    if not raw_response:
+        logger.error("No response from LLM for document %s", doc_id)
+        return
+
+    try:
+        data = json.loads(raw_response)
+
+        po_id = uuid.uuid4().hex[:12]
+        now = datetime.now(timezone.utc).isoformat()
+
+        db = get_db()
         db.execute(
-            """INSERT INTO po_items (po_id, item_name, description, due_date, quantity, unit_price)
+            """INSERT INTO purchase_orders (id, document_id, company_name, po_number, po_date, created_at)
                VALUES (?, ?, ?, ?, ?, ?)""",
             (
                 po_id,
-                item["item_name"],
-                item["description"],
-                item["due_date"],
-                item["quantity"],
-                item["unit_price"],
+                doc_id,
+                data.get("company_name"),
+                data.get("po_number"),
+                data.get("po_date"),
+                now,
             ),
         )
-    db.commit()
-    db.close()
 
-    logger.info(
-        "PO extracted for %s: company=%r, po_number=%r, %d item(s)",
-        doc_id,
-        company_name,
-        po_number,
-        len(items),
-    )
+        for item in data.get("items", []):
+            db.execute(
+                """INSERT INTO po_items (po_id, item_name, description, due_date, quantity, unit_price)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    po_id,
+                    item.get("item_name"),
+                    item.get("description"),
+                    item.get("due_date"),
+                    item.get("quantity"),
+                    item.get("unit_price"),
+                ),
+            )
+        db.commit()
+        db.close()
+        logger.info("LLM extraction successful for %s", doc_id)
+
+    except (json.JSONDecodeError, KeyError) as e:
+        logger.error("Failed to parse LLM JSON for %s: %s", doc_id, e)
 
 
 # ---------------------------------------------------------------------------
@@ -531,22 +419,34 @@ def process_pdf(doc_id: str, filepath: str):
 
         page_count = doc.num_pages() if callable(getattr(doc, "num_pages", None)) else 0
 
+        # Get flat text reading using Unstructured
+        unstructured_text = ""
+        try:
+            from unstructured.partition.pdf import partition_pdf
+
+            elements = partition_pdf(filename=filepath)
+            unstructured_text = "\n\n".join([str(el) for el in elements])
+            logger.info("Unstructured processing completed for %s", doc_id)
+        except Exception as ue:
+            logger.warning("Unstructured processing failed for %s: %s", doc_id, ue)
+
         db = get_db()
         db.execute(
             """UPDATE documents
-               SET status='completed', text_content=?, tables_json=?, page_count=?
+               SET status='completed', text_content=?, tables_json=?, unstructured_text=?, page_count=?
                WHERE id=?""",
-            (text_content, json.dumps(tables), page_count, doc_id),
+            (text_content, json.dumps(tables), unstructured_text, page_count, doc_id),
         )
         db.commit()
         db.close()
         logger.info(
-            "Docling processing completed for %s — %d table(s) found",
+            "Processing completed for %s — %d table(s) found",
             doc_id,
             len(tables),
         )
 
-        extract_po_data(doc_id, text_content, tables)
+        # Trigger LLM extraction now that data is prepared
+        extract_po_with_llm(doc_id, text_content, json.dumps(tables), unstructured_text)
 
     except Exception as exc:
         logger.exception("Docling processing failed for %s", doc_id)
