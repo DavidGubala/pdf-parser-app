@@ -8,7 +8,7 @@ services:
     volumes:
       - ./data/uploads:/app/uploads
       - ./data/logs:/app/logs
-      - ./data/documents.db:/app/documents.db
+      - ./data:/app/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:

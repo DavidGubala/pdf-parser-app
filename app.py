@@ -28,7 +28,10 @@ from werkzeug.utils import secure_filename
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = Path(__file__).parent / "uploads"
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB
-app.config["DATABASE"] = Path(__file__).parent / "documents.db"
+# Use DATABASE_PATH env var if provided, otherwise default to /app/data/documents.db
+# This ensures compatibility with the recommended volume mapping in docker-compose.dev.yml
+db_path = os.getenv("DATABASE_PATH", "/app/data/documents.db")
+app.config["DATABASE"] = Path(db_path)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-me-in-production")
 app.permanent_session_lifetime = timedelta(days=30)
 
@@ -370,10 +373,15 @@ def build_extraction_prompt(
     tables = json.loads(tables_json) if isinstance(tables_json, str) else tables_json
     tables_md = "\n\n".join([t.get("markdown", "") for t in tables])
 
+    lessons_section = (
+        f"\n### LESSONS FROM PREVIOUS EXTRACTIONS\n{lessons_learned}\n"
+        if lessons_learned
+        else ""
+    )
     prompt = f"""Please extract the PO data from the following sources:
-{f"\n### LESSONS FROM PREVIOUS EXTRACTIONS\n{lessons_learned}\n" if lessons_learned else ""}
-### UNSTRUCTURED TEXT
-{unstructured_text}
+{lessons_section}
+ ### UNSTRUCTURED TEXT
+ {unstructured_text}
 
 ### MARKDOWN STRUCTURE
 {text_content}
@@ -880,78 +888,6 @@ def export_corrections():
     db.close()
 
     return jsonify([dict(c) for c in corrections])
-
-
-@app.route("/api/schedule", methods=["GET"])
-@login_required
-def get_schedule():
-    uid = current_user_id()
-    db = get_db()
-
-    items = db.execute(
-        """
-        SELECT
-            pi.id, pi.item_name, pi.description, pi.due_date,
-            pi.quantity, pi.unit_price,
-            po.company_name, po.po_number, po.po_date, po.document_id,
-            d.original_name AS document_name
-        FROM po_items pi
-        JOIN purchase_orders po ON pi.po_id = po.id
-        JOIN documents d ON po.document_id = d.id
-        WHERE d.user_id = ?
-        ORDER BY
-            CASE WHEN pi.due_date = '' OR pi.due_date IS NULL THEN 1 ELSE 0 END,
-            pi.due_date ASC,
-            po.company_name ASC
-    """,
-        (uid,),
-    ).fetchall()
-
-    total_pos = db.execute(
-        "SELECT COUNT(*) AS c FROM purchase_orders po JOIN documents d ON po.document_id = d.id WHERE d.user_id = ?",
-        (uid,),
-    ).fetchone()["c"]
-    total_items = len(items)
-
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    week_end = (datetime.now(timezone.utc) + timedelta(days=7)).strftime("%Y-%m-%d")
-
-    overdue = 0
-    due_this_week = 0
-    upcoming = 0
-
-    items_list = []
-    for item in items:
-        d = dict(item)
-        due = d.get("due_date", "")
-        if due:
-            if due < today:
-                d["urgency"] = "overdue"
-                overdue += 1
-            elif due <= week_end:
-                d["urgency"] = "due_soon"
-                due_this_week += 1
-            else:
-                d["urgency"] = "upcoming"
-                upcoming += 1
-        else:
-            d["urgency"] = "no_date"
-        items_list.append(d)
-
-    db.close()
-
-    return jsonify(
-        {
-            "summary": {
-                "total_pos": total_pos,
-                "total_items": total_items,
-                "overdue": overdue,
-                "due_this_week": due_this_week,
-                "upcoming": upcoming,
-            },
-            "items": items_list,
-        }
-    )
 
 
 # ---------------------------------------------------------------------------
