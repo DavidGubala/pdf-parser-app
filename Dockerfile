@@ -1,9 +1,10 @@
-# 1. Use the official NVIDIA CUDA runtime as the base
-FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+# Use the official NVIDIA CUDA 12.8 runtime image to match host drivers and support Blackwell GPUs
+FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
 
+# Prevent interactive prompts during apt install
 ENV DEBIAN_FRONTEND=noninteractive
 
-# 2. Install Python 3.11 and system dependencies
+# Install system dependencies and Python 3.11
 RUN apt-get update && apt-get install -y --no-install-recommends \
     software-properties-common \
     build-essential \
@@ -14,31 +15,40 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get update && apt-get install -y python3.11 python3.11-distutils \
     && rm -rf /var/lib/apt/lists/*
 
+# Install pip for Python 3.11
 RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11
+
+# Set Python 3.11 as the default python
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
     && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
 
 WORKDIR /app
 
-# 3. INSTALL TORCH FIRST
-# We install the CUDA 12.4 version of torch before anything else.
-RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+# 1. Install PyTorch with CUDA 12.8 support first
+# This ensures the GPU-enabled version is present before other dependencies are installed
+RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
-# 4. INSTALL REQUIREMENTS
-# We use --no-deps for the requirements install if we want to be extreme,
-# but instead we'll just install them and then RE-INSTALL torch to be safe.
+# 2. Install application requirements
 COPY requirements.txt .
+# Use --ignore-installed to bypass distutils errors (e.g., blinker)
 RUN pip install --no-cache-dir --ignore-installed -r requirements.txt
 
-# 5. THE FINAL LOCK: Force-reinstall the GPU version of torch
-# This ensures that if 'docling' installed a CPU version of torch as a dependency,
-# it is immediately overwritten by the GPU version before the image is finished.
-RUN pip install --no-cache-dir --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+# 3. FINAL LOCK: Force-reinstall the CUDA 12.8 version of torch
+# This prevents libraries like 'docling' from accidentally downgrading torch to a CPU version
+RUN pip install --no-cache-dir --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
+# Copy application code and assets
 COPY app.py seed_user.py ./
 COPY templates/ templates/
 COPY static/ static/
+
+# Create necessary directories
 RUN mkdir -p uploads logs
 
 EXPOSE 8000
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:8000", "--workers", "2", "--timeout", "120"]
+
+# Use gunicorn to serve the Flask app
+CMD ["gunicorn", "app:app", \
+     "--bind", "0.0.0.0:8000", \
+     "--workers", "2", \
+     "--timeout", "120"]
