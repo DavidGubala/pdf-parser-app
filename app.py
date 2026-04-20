@@ -339,7 +339,7 @@ def query_ollama(prompt, system_prompt=SYSTEM_PROMPT):
     }
 
     try:
-        response = requests.post(url, json=payload, timeout=60)
+        response = requests.post(url, json=payload, timeout=120)
         response.raise_for_status()
         return response.json()["message"]["content"]
     except Exception as e:
