@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import requests
 from flask import (
     Flask,
     jsonify,
@@ -805,6 +806,18 @@ def get_schedule():
         items_list.append(d)
 
     db.close()
+    return jsonify(
+        {
+            "summary": {
+                "total_pos": total_pos,
+                "total_items": total_items,
+                "overdue": overdue,
+                "due_this_week": due_this_week,
+                "upcoming": upcoming,
+            },
+            "items": items_list,
+        }
+    )
 
 
 @app.route("/api/purchase-orders/correct", methods=["POST"])
@@ -834,9 +847,11 @@ def correct_purchase_order():
             new_val = corr.get("new_value")
 
             if entity_type == "PO":
+                if field not in {"company_name", "po_number", "po_date"}:
+                    continue
                 # Get original value
                 row = db.execute(
-                    "SELECT ? FROM purchase_orders WHERE id = ?", (field, entity_id)
+                    f"SELECT {field} FROM purchase_orders WHERE id = ?", (entity_id,)
                 ).fetchone()
                 original_val = row[0] if row else None
 
@@ -846,6 +861,14 @@ def correct_purchase_order():
                     (new_val, entity_id),
                 )
             elif entity_type == "ITEM":
+                if field not in {
+                    "item_name",
+                    "description",
+                    "due_date",
+                    "quantity",
+                    "unit_price",
+                }:
+                    continue
                 # Get original value
                 row = db.execute(
                     f"SELECT {field} FROM po_items WHERE id = ?", (entity_id,)
