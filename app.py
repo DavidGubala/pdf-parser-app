@@ -40,6 +40,14 @@ app.permanent_session_lifetime = timedelta(days=30)
 # Logging — stdout + daily log file (logs/YYYY-MM-DD.log)
 # ---------------------------------------------------------------------------
 
+from docling.datamodel.pipeline_options import PipelineOptions
+from docling.document_converter import DocumentConverter
+
+# Initialize Docling Converter as a singleton with GPU acceleration
+pipeline_options = PipelineOptions()
+pipeline_options.accelerator = "cuda"
+converter = DocumentConverter(pipeline_options=pipeline_options)
+
 LOG_DIR = Path(__file__).parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
@@ -51,21 +59,28 @@ _stream_handler = logging.StreamHandler()
 _stream_handler.setFormatter(logging.Formatter(LOG_FORMAT))
 _root_logger.addHandler(_stream_handler)
 
-_file_handler = logging.handlers.TimedRotatingFileHandler(
-    LOG_DIR / "app.log",
-    when="midnight",
-    backupCount=0,  # keep all daily files indefinitely
-    utc=True,
-)
-_file_handler.suffix = "%Y-%m-%d"
-_file_handler.namer = lambda name: str(LOG_DIR / (name.rsplit(".", 1)[-1] + ".log"))
+
+class DailyFileHandler(logging.FileHandler):
+    def __init__(self, log_dir):
+        self.log_dir = log_dir
+        self.current_date = None
+        super().__init__(self._get_filename())
+        self.current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    def _get_filename(self):
+        return str(self.log_dir / datetime.now(timezone.utc).strftime("%Y-%m-%d.log"))
+
+    def emit(self, record):
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if today != self.current_date:
+            self.close()
+            self.baseFilename = self._get_filename()
+            self.stream = open(self.baseFilename, "a", encoding="utf-8")
+            self.current_date = today
+        super().emit(record)
 
 
-def _rotator(src: str, dst: str) -> None:
-    Path(src).rename(dst)
-
-
-_file_handler.rotator = _rotator
+_file_handler = DailyFileHandler(LOG_DIR)
 _file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
 _root_logger.addHandler(_file_handler)
 
@@ -479,9 +494,7 @@ def process_pdf(doc_id: str, filepath: str):
         # --- Docling Phase ---
         docling_start = time.time()
         logger.info("Running Docling conversion for %s...", doc_id)
-        from docling.document_converter import DocumentConverter
 
-        converter = DocumentConverter()
         result = converter.convert(filepath)
         doc = result.document
         docling_latency = time.time() - docling_start

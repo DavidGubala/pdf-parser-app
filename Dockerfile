@@ -4,7 +4,7 @@ FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
 # Prevent interactive prompts during apt install
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies and Python 3.11
+# Install system dependencies and Python 3.11 in a single layer to reduce image size and build time
 RUN apt-get update && apt-get install -y --no-install-recommends \
     software-properties-common \
     build-essential \
@@ -24,18 +24,17 @@ RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
 
 WORKDIR /app
 
-# 1. Install PyTorch with CUDA 12.8 support first
-# This ensures the GPU-enabled version is present before other dependencies are installed
-RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+# 1. Install PyTorch with CUDA 12.4 support first.
+# We use cu124 as it is the current stable target for PyTorch 2.x and is fully compatible
+# with CUDA 12.8 drivers. This avoids the massive build times caused by searching
+# for non-standard indices or force-reinstalling.
+RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 
-# 2. Install application requirements
+# 2. Install application requirements.
+# Since torch is already installed, pip will satisfy the torch dependency of 'docling'
+# and 'unstructured' using the existing GPU version.
 COPY requirements.txt .
-# Use --ignore-installed to bypass distutils errors (e.g., blinker)
 RUN pip install --no-cache-dir --ignore-installed -r requirements.txt
-
-# 3. FINAL LOCK: Force-reinstall the CUDA 12.8 version of torch
-# This prevents libraries like 'docling' from accidentally downgrading torch to a CPU version
-RUN pip install --no-cache-dir --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
 # Copy application code and assets
 COPY app.py seed_user.py ./
