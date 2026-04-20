@@ -180,8 +180,11 @@ def logout():
 
 
 def get_db():
-    db = sqlite3.connect(app.config["DATABASE"])
+    # timeout=30 tells SQLite to wait up to 30 seconds for a lock to clear
+    db = sqlite3.connect(app.config["DATABASE"], timeout=30)
     db.row_factory = sqlite3.Row
+    # WAL mode allows simultaneous reads and writes
+    db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA foreign_keys = ON")
     return db
 
