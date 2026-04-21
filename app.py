@@ -40,12 +40,6 @@ app.permanent_session_lifetime = timedelta(days=30)
 # Logging — stdout + daily log file (logs/YYYY-MM-DD.log)
 # ---------------------------------------------------------------------------
 
-from docling.datamodel.pipeline_options import PipelineOptions
-from docling.document_converter import DocumentConverter
-
-# Initialize Docling Converter as a singleton with GPU acceleration
-pipeline_options = PipelineOptions(accelerator="cuda")
-converter = DocumentConverter(pipeline_options=pipeline_options)
 
 LOG_DIR = Path(__file__).parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
@@ -84,6 +78,16 @@ _file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
 _root_logger.addHandler(_file_handler)
 
 logger = logging.getLogger(__name__)
+
+import torch
+from docling.datamodel.pipeline_options import PipelineOptions
+from docling.document_converter import DocumentConverter
+
+# Initialize Docling Converter as a singleton with GPU acceleration if available
+accelerator = "cuda" if torch.cuda.is_available() else "cpu"
+logger.info("Initializing Docling with accelerator: %s", accelerator)
+pipeline_options = PipelineOptions(accelerator=accelerator)
+converter = DocumentConverter(pipeline_options=pipeline_options)
 
 ALLOWED_EXTENSIONS = {"pdf"}
 
