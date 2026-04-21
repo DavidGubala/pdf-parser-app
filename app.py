@@ -44,8 +44,7 @@ from docling.datamodel.pipeline_options import PipelineOptions
 from docling.document_converter import DocumentConverter
 
 # Initialize Docling Converter as a singleton with GPU acceleration
-pipeline_options = PipelineOptions()
-pipeline_options.accelerator = "cuda"
+pipeline_options = PipelineOptions(accelerator="cuda")
 converter = DocumentConverter(pipeline_options=pipeline_options)
 
 LOG_DIR = Path(__file__).parent / "logs"
