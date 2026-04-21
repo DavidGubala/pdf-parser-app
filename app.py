@@ -80,14 +80,22 @@ _root_logger.addHandler(_file_handler)
 logger = logging.getLogger(__name__)
 
 import torch
-from docling.datamodel.pipeline_options import PipelineOptions
-from docling.document_converter import DocumentConverter
+from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.document_converter import DocumentConverter, PdfFormatOption
 
 # Initialize Docling Converter as a singleton with GPU acceleration if available
-accelerator = "cuda" if torch.cuda.is_available() else "cpu"
-logger.info("Initializing Docling with accelerator: %s", accelerator)
-pipeline_options = PipelineOptions(accelerator=accelerator)
-converter = DocumentConverter(pipeline_options=pipeline_options)
+device = AcceleratorDevice.CUDA if torch.cuda.is_available() else AcceleratorDevice.CPU
+logger.info("Initializing Docling with accelerator: %s", device.name)
+
+accelerator_options = AcceleratorOptions(num_threads=8, device=device)
+pipeline_options = PdfPipelineOptions()
+pipeline_options.accelerator_options = accelerator_options
+
+converter = DocumentConverter(
+    format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}
+)
 
 ALLOWED_EXTENSIONS = {"pdf"}
 

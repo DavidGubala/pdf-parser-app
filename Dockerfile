@@ -24,11 +24,10 @@ RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
 
 WORKDIR /app
 
-# 1. Install PyTorch with CUDA 12.4 support first.
-# We use cu124 as it is the current stable target for PyTorch 2.x and is fully compatible
-# with CUDA 12.8 drivers. This avoids the massive build times caused by searching
-# for non-standard indices or force-reinstalling.
-RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+# 1. Install PyTorch 2.6.0 with CUDA 12.4 support first.
+# We use cu124 as it is compatible with the host driver (535.261.03 supports up to CUDA 12.8).
+# Pinning to 2.6.0 prevents pip from pulling newer versions (like 2.11.0) that require CUDA 13 dependencies.
+RUN pip install --no-cache-dir torch==2.6.0 torchvision==0.19.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
 
 # 2. Install application requirements.
 # Since torch is already installed, pip will satisfy the torch dependency of 'docling'
