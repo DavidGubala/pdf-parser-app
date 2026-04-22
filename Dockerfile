@@ -25,6 +25,10 @@ RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
 WORKDIR /app
 
 COPY requirements.txt .
+
+# Pre-install blinker via pip to bypass the distutils uninstall error
+RUN pip install --no-cache-dir --ignore-installed blinker
+
 # 1. Install application requirements first.
 RUN pip install --no-cache-dir -r requirements.txt
 
