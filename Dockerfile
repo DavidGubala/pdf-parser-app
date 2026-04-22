@@ -1,5 +1,5 @@
-# Use the official NVIDIA CUDA 11.8 runtime image for maximum compatibility with host driver 535.x
-FROM nvidia/cuda:11.8.0-runtime-ubuntu22.04
+# Use the official NVIDIA CUDA 12.1 runtime image for compatibility with host driver 535.x
+FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
 
 # Prevent interactive prompts during apt install
 ENV DEBIAN_FRONTEND=noninteractive
@@ -32,10 +32,9 @@ RUN pip install --no-cache-dir --ignore-installed blinker
 # 1. Install application requirements first.
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 2. FINAL LOCK: Force-install the correct CUDA 11.8 PyTorch version.
-# CUDA 11.8 provides maximum compatibility with older host drivers (like 535.x)
-# while still delivering excellent GPU performance for Docling.
-RUN pip install --no-cache-dir --force-reinstall torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu118
+# 2. FINAL LOCK: Force-install the correct CUDA 12.1 PyTorch version.
+# --no-deps guarantees pip does not try to resolve dependencies and override our pinned version.
+RUN pip install --no-cache-dir --force-reinstall --no-deps torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu121
 
 # Copy application code and assets
 COPY app.py seed_user.py ./
