@@ -525,6 +525,12 @@ def process_pdf(doc_id: str, filepath: str):
         docling_start = time.time()
         logger.info("Running Docling conversion for %s...", doc_id)
 
+        # Clear GPU memory cache before heavy Docling inference
+        # Critical for 3GB cards like GTX 1060 to avoid CUDNN_STATUS_NOT_INITIALIZED
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            logger.info("Cleared GPU memory cache before Docling conversion")
+
         result = converter.convert(filepath)
         doc = result.document
         docling_latency = time.time() - docling_start

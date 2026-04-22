@@ -54,5 +54,5 @@ EXPOSE 8000
 # Use gunicorn to serve the Flask app
 CMD ["gunicorn", "app:app", \
      "--bind", "0.0.0.0:8000", \
-     "--workers", "2", \
+     "--workers", "1", \
      "--timeout", "120"]
