@@ -115,6 +115,16 @@ converter = DocumentConverter(
     format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}
 )
 
+# Force early cuDNN initialization to prevent CUDNN_STATUS_NOT_INITIALIZED
+# during Docling's first lazy convolution call.
+if torch.cuda.is_available():
+    _dev = torch.device("cuda")
+    torch.nn.functional.conv2d(
+        torch.zeros(32, 32, 32, 32, device=_dev),
+        torch.zeros(32, 32, 32, 32, device=_dev),
+    )
+    logger.info("Forced cuDNN initialization")
+
 ALLOWED_EXTENSIONS = {"pdf"}
 
 _DATE_RE = re.compile(r"\b(\d{1,2}/\d{1,2}/\d{2,4})\b")
