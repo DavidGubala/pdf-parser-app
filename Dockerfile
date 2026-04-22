@@ -38,8 +38,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # 2. FINAL LOCK: Force-install the correct CUDA 12.1 PyTorch version.
 # --no-deps guarantees pip does not try to resolve dependencies and override our pinned version.
-# Downgraded to 2.4.0 for maximum cuDNN stability with the CUDA 12.1 runtime image.
-RUN pip install --no-cache-dir --force-reinstall --no-deps torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu121
+# Downgraded to 2.3.1 for cuDNN 8.x compatibility with the CUDA 12.1 runtime image.
+RUN pip install --no-cache-dir --force-reinstall --no-deps torch==2.3.1 torchvision==0.18.1 torchaudio==2.3.1 --index-url https://download.pytorch.org/whl/cu121
 
 # Copy application code and assets
 COPY app.py seed_user.py ./
