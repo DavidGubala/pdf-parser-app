@@ -1,5 +1,5 @@
-# Use the official NVIDIA CUDA 12.1 runtime image to avoid cuDNN version conflicts with PyTorch
-FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
+# Use the official NVIDIA CUDA 12.1 cuDNN8 runtime image for PyTorch compatibility
+FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
 
 # Prevent interactive prompts during apt install
 ENV DEBIAN_FRONTEND=noninteractive
