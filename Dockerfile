@@ -1,10 +1,12 @@
-# Use the official NVIDIA CUDA 12.1 devel image to ensure libcupti and all toolkit libs are present
-FROM nvidia/cuda:12.1.0-devel-ubuntu22.04
+# Use the official NVIDIA CUDA 12.1 runtime image to avoid cuDNN version conflicts with PyTorch
+FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
 
 # Prevent interactive prompts during apt install
 ENV DEBIAN_FRONTEND=noninteractive
-# Prioritize PyTorch's bundled cuDNN/CUDA libs over system versions to prevent CUDNN_STATUS_NOT_INITIALIZED
-ENV LD_LIBRARY_PATH=/usr/local/lib/python3.11/dist-packages/torch/lib:/usr/local/cuda/extras/CUPTI/lib64:/usr/local/cuda/lib64
+
+# Install libcupti which is required by PyTorch 2.5+ but missing from the runtime image
+RUN apt-get update && apt-get install -y --no-install-recommends cuda-cupti-12-1 && rm -rf /var/lib/apt/lists/*
+ENV LD_LIBRARY_PATH=/usr/local/cuda/extras/CUPTI/lib64:$LD_LIBRARY_PATH
 
 # Install system dependencies and Python 3.11 in a single layer to reduce image size and build time
 RUN apt-get update && apt-get install -y --no-install-recommends \
