@@ -1,13 +1,13 @@
-# Use CUDA 11.8 cuDNN8 runtime for PyTorch 2.4 compatibility on Pascal GPUs.
-# CUDA 11.8 bundles cuDNN 8 which avoids the CUDNN_STATUS_NOT_INITIALIZED bug on GTX 1060.
-FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+# Use plain CUDA 11.8 runtime without system cuDNN to prevent library conflicts.
+# PyTorch 2.4+cu118 bundles its own cuDNN which will be used instead.
+FROM nvidia/cuda:11.8.0-runtime-ubuntu22.04
 
 # Prevent interactive prompts during apt install
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install CUPTI for PyTorch profiling support
 RUN apt-get update && apt-get install -y --no-install-recommends cuda-cupti-11-8 && rm -rf /var/lib/apt/lists/*
-ENV LD_LIBRARY_PATH=/usr/local/cuda-11.8/lib64:/usr/local/cuda-11.8/extras/CUPTI/lib64:$LD_LIBRARY_PATH
+ENV LD_LIBRARY_PATH=/usr/local/lib/python3.11/dist-packages/torch/lib:/usr/local/cuda-11.8/lib64:/usr/local/cuda-11.8/extras/CUPTI/lib64:$LD_LIBRARY_PATH
 
 # Install system dependencies and Python 3.11 in a single layer to reduce image size and build time
 RUN apt-get update && apt-get install -y --no-install-recommends \

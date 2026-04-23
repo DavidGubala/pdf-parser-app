@@ -80,24 +80,6 @@ _root_logger.addHandler(_file_handler)
 logger = logging.getLogger(__name__)
 
 import torch
-
-# --- CUDA Diagnostic Logging ---
-logger.info("--- CUDA Diagnostic Start ---")
-logger.info("PyTorch version: %s", torch.__version__)
-logger.info("CUDA available (torch check): %s", torch.cuda.is_available())
-if torch.cuda.is_available():
-    logger.info("CUDA device count: %d", torch.cuda.device_count())
-    logger.info("Current CUDA device: %s", torch.cuda.current_device())
-    logger.info("CUDA device name: %s", torch.cuda.get_device_name(0))
-    logger.info("CUDA compiled version: %s", torch.version.cuda)
-else:
-    logger.warning("CUDA is NOT available. Common causes:")
-    logger.warning("1. NVIDIA driver not installed or too old on host")
-    logger.warning("2. Container not started with --gpus all")
-    logger.warning("3. PyTorch installed without CUDA support")
-    logger.warning("4. NVIDIA Container Toolkit not installed on host")
-logger.info("--- CUDA Diagnostic End ---")
-
 from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
