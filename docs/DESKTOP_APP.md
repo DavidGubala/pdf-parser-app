@@ -7,70 +7,69 @@ Convert the web-based PDF Parse app into a desktop application that users launch
 ## Table of Contents
 
 1. [Architecture Overview](#1-architecture-overview)
-2. [Options Comparison](#2-options-comparison)
-3. [Recommended Approach: Tauri (Lightweight Browser Shell)](#3-recommended-approach-tauri-lightweight-browser-shell)
-4. [Alternative A: Progressive Web App (PWA) — Zero Install](#4-alternative-a-progressive-web-app-pwa--zero-install)
-5. [Alternative B: PyWebView — Python-Native Wrapper](#5-alternative-b-pywebview--python-native-wrapper)
-6. [Alternative C: Electron — Full Chromium Bundle](#6-alternative-c-electron--full-chromium-bundle)
-7. [Server-Side Changes (All Approaches)](#7-server-side-changes-all-approaches)
-8. [Distribution & Updates](#8-distribution--updates)
-9. [Decision Matrix](#9-decision-matrix)
+2. [Recommended Approach: Tauri (Local-First Hybrid)](#2-recommended-approach-tauri-local-first-hybrid)
+3. [Server-Side Changes](#3-server-side-changes)
+4. [Distribution & Updates](#4-distribution--updates)
 
 ---
 
 ## 1. Architecture Overview
 
-The current app is already well-suited for this pattern because the frontend (vanilla HTML/CSS/JS) communicates with the backend entirely through REST API calls (`/api/*`). No code restructuring is needed — the desktop client is just a window that loads the server URL.
+The desktop application follows a **Local-First Hybrid Architecture**. While heavy processing (PDF parsing) remains on the server, the application maintains a local SQLite database to ensure the user has instant access to their data even when offline.
 
 ```
 ┌─────────────────────────────┐        HTTPS        ┌──────────────────────────────┐
 │     User's Desktop          │  ◄──────────────►   │     Your Server              │
 │                             │                      │                              │
 │  ┌───────────────────────┐  │                      │  ┌────────────────────────┐  │
-│  │  Tauri / PWA / etc.   │  │                      │  │  Flask (app.py)        │  │
-│  │                       │  │                      │  │  ├─ Auth & Sessions    │  │
-│  │  System WebView       │──┼── fetch /api/* ──────┼──│  ├─ Docling PDF Parse  │  │
-│  │  (Edge/WebView2)      │  │                      │  │  ├─ SQLite DB          │  │
-│  │                       │  │                      │  │  └─ File Storage       │  │
-│  └───────────────────────┘  │                      │  └────────────────────────┘  │
-│                             │                      │                              │
-│  Desktop icon launches      │                      │  Docker / gunicorn           │
-│  the native window          │                      │  Cloudflare Tunnel           │
-└─────────────────────────────┘                      └──────────────────────────────┘
+│  │      Frontend UI      │  │                      │  │  Flask (app.py)        │  │
+│  │   (HTML/CSS/JS)       │  │                      │  │  ├─ Auth & Sessions    │  │
+│  └──────────┬────────────┘  │                      │  │  ├─ Docling PDF Parse  │  │
+│             │ invoke()      │                      │  │  ├─ SQLite DB          │  │
+│  ┌──────────┴────────────┐  │                      │  │  └─ File Storage       │  │
+│  │    Tauri Rust Core    │──┼── API / Sync ───────┼──│  └────────────────────────┘  │
+│  │  ├─ Local SQLite DB   │  │                      │                              │
+│  │  └─ Sync Engine       │  │                      │  Docker / gunicorn           │
+│  │                       │  │                      │  Cloudflare Tunnel           │
+│  └───────────────────────┘  │                      └──────────────────────────────┘
+└─────────────────────────────┘
 ```
 
 **What the desktop app does:**
-- Opens a native OS window with a built-in browser engine
-- Navigates to your server URL (e.g., `https://po.yourdomain.com`)
-- Provides a desktop icon, taskbar presence, and native window controls
+- **Local Data Management:** Stores a mirrored copy of the user's POs and schedule in a local SQLite DB.
+- **Offline Access:** Allows reading and modifying data without an internet connection.
+- **Synchronization:** Background worker that pushes local changes and pulls server updates using timestamps.
+- **Server Proxy:** Handles file uploads for PDF processing and authenticates with the Flask server.
 
 **What the desktop app does NOT do:**
-- No local database, no PDF processing, no business logic
-- No local Python runtime required on the user's machine
+- **PDF Processing:** All Docling parsing is still performed on the server to keep the client lightweight.
+- **Primary Storage:** The server remains the "Source of Truth".
+
+## 1.1 Data Flow & Synchronization
+
+To achieve a seamless offline experience, the application uses the following patterns:
+
+### Read Operations (Offline-First)
+`Frontend` $\rightarrow$ `Tauri Rust` $\rightarrow$ `Local SQLite` $\rightarrow$ `Frontend`
+- Data is always read from the local database first. This ensures the UI is instantaneous and works without a connection.
+
+### Write Operations (Sync-Queue)
+`Frontend` $\rightarrow$ `Tauri Rust` $\rightarrow$ `Local SQLite` $\rightarrow$ `Sync Queue` $\rightarrow$ `Flask Server`
+- Changes are saved locally immediately.
+- A background Sync Engine attempts to push these changes to the server. If offline, changes are queued until connectivity is restored.
+
+### PDF Processing (Online-Only)
+`Frontend` $\rightarrow$ `Tauri Rust` $\rightarrow$ `Flask Server` $\rightarrow$ `Processing` $\rightarrow$ `Local SQLite`
+- PDF parsing requires server-side resources (Docling).
+- The file is uploaded to the server; upon successful processing, the server returns the extracted data, which Tauri then saves into the local SQLite DB.
 
 ---
 
-## 2. Options Comparison
 
-| Criteria | **Tauri** | **PWA** | **PyWebView** | **Electron** |
-|---|---|---|---|---|
-| Installer size | **~3–5 MB** | **0 (browser)** | ~15–30 MB | ~150–200 MB |
-| Browser engine | System WebView2 | User's browser | System WebView2 | Bundled Chromium |
-| Desktop icon | Yes | Yes (after install) | Yes | Yes |
-| Offline capable | No (thin client) | Partial (Service Worker) | No (thin client) | No (thin client) |
-| Auto-update | Built-in updater | Automatic (web) | Manual / custom | Built-in updater |
-| Dev language | Rust + JS/TS | HTML/JS only | Python | JS/TS |
-| Native OS feel | Excellent | Good | Good | Good |
-| Build complexity | Medium | **Low** | **Low** | Medium |
-| Windows support | Yes (WebView2) | Yes | Yes | Yes |
-| macOS support | Yes (WebKit) | Yes | Yes | Yes |
-| Linux support | Yes (WebKitGTK) | Yes | Yes | Yes |
 
----
+## 2. Recommended Approach: Tauri (Local-First Hybrid)
 
-## 3. Recommended Approach: Tauri (Lightweight Browser Shell)
-
-**Tauri** is the best fit for this use case. It uses the operating system's built-in web renderer (WebView2 on Windows, WebKit on macOS) instead of bundling a full browser. The result is a **~3 MB installer** that gives users a native window pointing at your server.
+**Tauri** is the best fit for this use case. It allows us to combine a lightweight web frontend with a powerful Rust backend capable of managing a local SQLite database and a synchronization engine. The result is a high-performance application that feels native and works offline while still leveraging server-side power for PDF processing.
 
 ### Why Tauri?
 
@@ -121,7 +120,7 @@ Edit `desktop/src-tauri/tauri.conf.json`:
     "title": "PDF Parse – Purchase Order Manager",
     "windows": [
       {
-        "url": "https://po.yourdomain.com",
+        "url": "index.html",
         "title": "PDF Parse",
         "width": 1280,
         "height": 800,
@@ -131,12 +130,7 @@ Edit `desktop/src-tauri/tauri.conf.json`:
       }
     ],
     "security": {
-      "dangerousRemoteUrlAccess": [
-        {
-          "url": "https://po.yourdomain.com/**",
-          "enableRequestBody": true
-        }
-      ]
+      "dangerousRemoteUrlAccess": []
     }
   },
   "bundle": {
@@ -156,7 +150,7 @@ Edit `desktop/src-tauri/tauri.conf.json`:
 }
 ```
 
-### Minimal Frontend Loader
+### Frontend Entry Point
 
 Create `desktop/src/index.html` — a splash/loading screen shown briefly while the WebView navigates to your server:
 
@@ -198,11 +192,9 @@ Create `desktop/src/index.html` — a splash/loading screen shown briefly while 
     <p>Connecting to server…</p>
   </div>
   <script>
-    // Redirect to the live server after a brief moment
-    const SERVER_URL = 'https://po.yourdomain.com';
-    setTimeout(() => {
-      window.location.href = SERVER_URL;
-    }, 500);
+    // The frontend is now bundled locally. 
+    // API calls should be made via Tauri's invoke() or fetch() to the server.
+    console.log("PDF Parse Desktop initialized");
   </script>
 </body>
 </html>
@@ -455,7 +447,7 @@ Output: `dist/PDF Parse Setup 1.0.0.exe` (~150 MB)
 
 ---
 
-## 7. Server-Side Changes (All Approaches)
+## 3. Server-Side Changes
 
 Regardless of which desktop wrapper you choose, a few server adjustments improve the experience.
 
@@ -505,7 +497,7 @@ def health_check():
 
 ---
 
-## 8. Distribution & Updates
+## 4. Distribution & Updates
 
 ### Distributing to Users
 
