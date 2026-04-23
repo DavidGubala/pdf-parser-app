@@ -1,12 +1,13 @@
-# Use the official NVIDIA CUDA 12.1 cuDNN8 runtime image for PyTorch compatibility
-FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+# Use CUDA 11.8 cuDNN8 runtime for PyTorch 2.4 compatibility on Pascal GPUs.
+# CUDA 11.8 bundles cuDNN 8 which avoids the CUDNN_STATUS_NOT_INITIALIZED bug on GTX 1060.
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
 
 # Prevent interactive prompts during apt install
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install libcupti which is required by PyTorch 2.5+ but missing from the runtime image
-RUN apt-get update && apt-get install -y --no-install-recommends cuda-cupti-12-1 && rm -rf /var/lib/apt/lists/*
-ENV LD_LIBRARY_PATH=/usr/local/cuda/extras/CUPTI/lib64:$LD_LIBRARY_PATH
+# Install CUPTI for PyTorch profiling support
+RUN apt-get update && apt-get install -y --no-install-recommends cuda-cupti-11-8 && rm -rf /var/lib/apt/lists/*
+ENV LD_LIBRARY_PATH=/usr/local/cuda-11.8/lib64:/usr/local/cuda-11.8/extras/CUPTI/lib64:$LD_LIBRARY_PATH
 
 # Install system dependencies and Python 3.11 in a single layer to reduce image size and build time
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -36,10 +37,10 @@ RUN pip install --no-cache-dir --ignore-installed blinker
 # 1. Install application requirements first.
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 2. FINAL LOCK: Force-install the correct CUDA 12.1 PyTorch version.
-# --no-deps guarantees pip does not try to resolve dependencies and override our pinned version.
-# Downgraded to 2.3.1 for cuDNN 8.x compatibility with the CUDA 12.1 runtime image.
-RUN pip install --no-cache-dir --force-reinstall --no-deps torch==2.3.1 torchvision==0.18.1 torchaudio==2.3.1 --index-url https://download.pytorch.org/whl/cu121
+# 2. FINAL LOCK: Force-install PyTorch 2.4 with CUDA 11.8.
+# This gives us PyTorch >= 2.4 (required by transformers) while using cuDNN 8
+# which is compatible with Pascal GPUs like the GTX 1060.
+RUN pip install --no-cache-dir --force-reinstall --no-deps torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu118
 
 # Copy application code and assets
 COPY app.py seed_user.py ./
