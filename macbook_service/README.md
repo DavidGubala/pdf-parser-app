@@ -4,14 +4,17 @@
 
 This directory contains the services that run on the MacBook compute node:
 
-1. **PDF Processing Microservice** (FastAPI + Docling) - Handles PDF extraction
-2. **Ollama Proxy** (optional) - Proxies LLM inference requests to local Ollama instance
+1. **PDF Processing Microservice** (FastAPI + Docling) — Handles PDF extraction on port 8000
+2. **Ollama Proxy** — Forwards LLM inference requests from the Linux server to the local Ollama instance
+
+The Linux server never talks directly to Ollama. All LLM requests go through the authenticated FastAPI service (`/process-ollama`), which proxies to `localhost:11434`.
 
 ## Prerequisites
 
 - macOS with Apple Silicon (M1/M2/M3/M4)
-- Tailscale installed and connected
+- Tailscale installed and connected on both MacBook and Linux server
 - Python 3.10+
+- Ollama installed (`brew install ollama` or from https://ollama.com/download)
 
 ## Quick Start
 
@@ -28,49 +31,49 @@ pip install -r requirements.txt
 
 ```bash
 # API key for authentication between Linux server and MacBook
+# This must match the PDF_API_KEY set on the Linux server
 export PDF_API_KEY="a-strong-random-secret-key"
-
-# Ollama URL (optional, only needed for LLM proxy)
-export OLLAMA_URL="http://127.0.0.1:11434"
 ```
 
-### 3. Start Ollama (Optional — only if you need LLM features)
-
-Ollama must be running **before** you start the PDF service if you want PO extraction / chat features.
-
-**Option A: Bind to all interfaces** (recommended — works with both local apps and remote Linux)
+### 3. Pull the Ollama Model
 
 ```bash
-OLLAMA_HOST="0.0.0.0:11434" ollama serve
+ollama pull qwen2.5:7b
 ```
 
-This lets your MacBook's Ollama desktop app, local scripts, and the remote Linux server all connect. Your LAN can't reach it if macOS Firewall is on.
-
-**Option B: Bind to Tailscale IP only** (more restrictive — breaks local apps)
+Verify it's available:
 
 ```bash
-OLLAMA_HOST="$(tailscale ip -4):11434" ollama serve
+ollama list
 ```
 
-Use this if you want **zero** LAN exposure. Local Ollama desktop app and scripts will need to use `http://100.x.x.x:11434` explicitly.
+### 4. Start Ollama (localhost only)
 
-> ⚠️ **Security:** If using Option A on public Wi-Fi, enable macOS Firewall (System Settings → Network → Firewall). `0.0.0.0` makes Ollama reachable from your LAN — the Firewall blocks the WAN.
+Ollama must be running before you start the PDF service if you want PO extraction / chat features.
 
-### 4. Start the PDF Service
+**Do NOT set `OLLAMA_HOST`.** Just run:
 
 ```bash
-# Bind to Tailscale IP for security
-uvicorn main:app --host "$(tailscale ip -4)" --port 8000
+ollama serve
 ```
 
-Or use the startup script:
+This binds to `127.0.0.1:11434` (localhost only). The FastAPI proxy will forward remote requests to it. No network exposure needed.
+
+### 5. Start the PDF Service
+
+In a separate terminal:
 
 ```bash
 chmod +x run.sh
 ./run.sh
 ```
 
-### 5. Verify Health
+This will:
+- Detect your Tailscale IP and bind to it
+- Check if Ollama is running
+- Start the FastAPI service with daily log rotation
+
+### 6. Verify Health
 
 ```bash
 curl http://$(tailscale ip -4):8000/health
@@ -92,8 +95,9 @@ Expected response:
 
 ```bash
 tmux new -s pdf-service
+cd macbook_service
 source venv/bin/activate
-uvicorn main:app --host "$(tailscale ip -4)" --port 8000
+./run.sh
 # Ctrl+B, D to detach
 ```
 
@@ -113,7 +117,7 @@ Create `~/Library/LaunchAgents/com.pdfservice.plist`:
     <array>
         <string>/bin/bash</string>
         <string>-c</string>
-        <string>cd ~/Dev/pdf-parser-app/macbook_service && source venv/bin/activate && uvicorn main:app --host "$(tailscale ip -4)" --port 8000</string>
+        <string>cd ~/Dev/pdf-parser-app/macbook_service && source venv/bin/activate && ./run.sh</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -133,10 +137,10 @@ Load the service:
 launchctl load ~/Library/LaunchAgents/com.pdfservice.plist
 ```
 
-### Option 3: caffeinate (Keep MacBook awake)
+### Option 3: caffeinate (Keep MacBook awake while plugged in)
 
 ```bash
-caffeinate -dims uvicorn main:app --host "$(tailscale ip -4)" --port 8000
+caffeinate -dims ./run.sh
 ```
 
 ## Testing
@@ -144,31 +148,36 @@ caffeinate -dims uvicorn main:app --host "$(tailscale ip -4)" --port 8000
 ### Test PDF Processing
 
 ```bash
-curl -X POST http://$(tailscale ip -4):8000/process-pdf \
+curl -X POST "http://$(tailscale ip -4):8000/process-pdf" \
   -H "Authorization: Bearer $PDF_API_KEY" \
-  -F "file=@/path/to/sample.pdf" \
-  http://100.x.x.x:8000/process-pdf \
-  -H "Authorization: Bearer $PDF_API_KEY" \
-  -F "file=@sample.pdf"
+  -F "file=@/path/to/sample.pdf"
 ```
 
-### Test Ollama Proxy (if Ollama is running)
+### Test Ollama Proxy
 
 ```bash
-curl -X POST http://$(tailscale ip -4):8000/process-ollama \
+curl -X POST "http://$(tailscale ip -4):8000/process-ollama" \
   -H "Authorization: Bearer $PDF_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model": "qwen2.5", "prompt": "Hello, how are you?"}'
+  -d '{
+    "model": "qwen2.5:7b",
+    "messages": [
+      {"role": "system", "content": "You are a helpful assistant."},
+      {"role": "user", "content": "Hello!"}
+    ],
+    "stream": false,
+    "format": "json"
+  }'
 ```
 
-If this returns `502 Ollama error`, Ollama is not running or not reachable. Check `OLLAMA_URL` in your env.
+If this returns `502 Ollama error`, Ollama is not running. Start it with `ollama serve`.
 
 ## Security Notes
 
 - The **PDF service** binds to Tailscale IP (`100.x.x.x`), **not** `0.0.0.0` — unreachable from local Wi-Fi
-- **Ollama** binds to `0.0.0.0` (recommended) so local apps still work; macOS Firewall blocks WAN access
-- Strong `PDF_API_KEY` is required for all PDF service requests
-- Ollama has **no built-in auth** — if you need auth, put a reverse proxy in front of it
+- **Ollama** stays on `localhost:11434` — no network exposure at all
+- The Linux server reaches Ollama **only** through the authenticated FastAPI proxy (`/process-ollama`)
+- Strong `PDF_API_KEY` (Bearer token) is required for all PDF service requests
 - Enable macOS Firewall + Stealth mode as defense-in-depth
 
 ## Troubleshooting
@@ -179,11 +188,11 @@ If this returns `502 Ollama error`, Ollama is not running or not reachable. Chec
 # Check Tailscale IP
 tailscale ip -4
 
-# Check if port is in use
+# Check if port 8000 is in use
 lsof -i :8000
 
 # Check logs
-cat pdf_service.log
+cat logs/$(date +%Y-%m-%d).log
 ```
 
 ### Docling not loading
@@ -196,17 +205,30 @@ pip install --upgrade docling
 python -c "from docling.document_converter import DocumentConverter; print('OK')"
 ```
 
+### Ollama proxy returns 502
+
+```bash
+# Verify Ollama is running locally
+curl http://127.0.0.1:11434/api/tags
+
+# Check if model is pulled
+ollama list
+
+# Check Ollama logs (if running via terminal, check terminal output)
+```
+
 ### Connection refused from Linux server
 
-1. Verify Tailscale is running: `tailscale status`
+1. Verify Tailscale is running on both machines: `tailscale status`
 2. Check MacBook firewall: System Settings → Network → Firewall
-3. Verify service is bound to Tailscale IP: `lsof -i :8000`
+3. Verify PDF service is bound to Tailscale IP: `lsof -i :8000`
 4. Test locally first: `curl http://127.0.0.1:8000/health`
+5. Test from Linux: `curl http://$(tailscale ip -4):8000/health`
 
 ## Logs
 
 Service logs are written to:
 
-- `pdf_service.log` - Current service log file
-- `/tmp/pdfservice.log` - If running via launchd
+- `logs/YYYY-MM-DD.log` — Daily rotated logs (created automatically)
+- `/tmp/pdfservice.log` — If running via launchd
 - Console output if running via tmux/terminal

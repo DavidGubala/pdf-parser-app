@@ -50,11 +50,11 @@ else
     echo ""
     echo "WARNING: Ollama not detected at $OLLAMA_URL"
     echo "  LLM features (PO extraction, chat) will be unavailable."
-    echo "  To start Ollama with remote access:"
+    echo "  To start Ollama (localhost only — remote access goes through FastAPI proxy):"
     echo ""
-    echo "    OLLAMA_HOST=0.0.0.0:11434 ollama serve"
+    echo "    ollama serve"
     echo ""
-    echo "  (Use 0.0.0.0 so local apps still work; macOS Firewall blocks WAN)"
+    echo "  (No OLLAMA_HOST needed; stays on 127.0.0.1. Linux reaches it via :8000/process-ollama)"
     echo ""
 fi
 
