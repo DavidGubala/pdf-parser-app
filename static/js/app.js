@@ -225,8 +225,10 @@ async function loadDocuments() {
     const docs = await res.json();
     renderDocumentList(docs);
 
-    const hasProcessing = docs.some((d) => d.status === "processing");
-    if (hasProcessing) startPolling();
+    const hasActive = docs.some(
+      (d) => d.status === "processing" || d.status === "analyzing",
+    );
+    if (hasActive) startPolling();
     else stopPolling();
   } catch (err) {
     docsList.innerHTML = `<p class="empty-state">Failed to load documents.</p>`;
@@ -243,15 +245,27 @@ function renderDocumentList(docs) {
     .map((d) => {
       const date = new Date(d.upload_time).toLocaleString();
       const badge = badgeHTML(d.status);
+      const active = d.status === "processing" || d.status === "analyzing";
+      const pct = d.status === "processing" ? "33%" : "66%";
+      const stageLabel =
+        d.status === "processing"
+          ? "Extracting PDF…"
+          : "Reading purchase order…";
+      const progressHTML = active
+        ? `<div class="doc-progress"><div class="progress-track"><div class="progress-fill" style="width:${pct}"></div></div><span class="progress-label">${stageLabel}</span></div>`
+        : "";
       return `
         <div class="doc-item" data-id="${d.id}">
-          <div class="doc-item-main">
-            <span class="doc-name" data-id="${d.id}">${escapeHTML(d.original_name)}</span>
-            <div class="doc-item-meta">
-              ${badge}
-              ${d.page_count ? `<span class="doc-pages">${d.page_count} pg</span>` : ""}
-              <span class="doc-date">${date}</span>
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;">
+            <div class="doc-item-main">
+              <span class="doc-name" data-id="${d.id}">${escapeHTML(d.original_name)}</span>
+              <div class="doc-item-meta">
+                ${badge}
+                ${d.page_count ? `<span class="doc-pages">${d.page_count} pg</span>` : ""}
+                <span class="doc-date">${date}</span>
+              </div>
             </div>
+            ${progressHTML}
           </div>
           <button class="btn btn-danger delete-btn" data-id="${d.id}" title="Delete">&#10005;</button>
         </div>`;
@@ -276,12 +290,15 @@ function renderDocumentList(docs) {
 
 function badgeHTML(status) {
   const labels = {
-    processing: "Processing",
+    processing: "Processing PDF",
+    analyzing: "Analyzing PO",
     completed: "Completed",
     error: "Error",
     pending: "Pending",
   };
-  return `<span class="badge badge-${status}">${status === "processing" ? '<span class="spinner"></span> ' : ""}${labels[status] || status}</span>`;
+  const active = status === "processing" || status === "analyzing";
+  const spinner = active ? '<span class="spinner"></span> ' : "";
+  return `<span class="badge badge-${status}">${spinner}${labels[status] || status}</span>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +307,9 @@ function badgeHTML(status) {
 
 function startPolling() {
   if (pollingTimer) return;
+  // Poll immediately so the user sees the current state right away
+  loadDocuments();
+  if (currentView === "schedule") loadSchedule();
   pollingTimer = setInterval(() => {
     loadDocuments();
     if (currentView === "schedule") loadSchedule();

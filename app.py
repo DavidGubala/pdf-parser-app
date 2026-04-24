@@ -440,6 +440,9 @@ def process_pdf(doc_id: str, filepath: str):
             "Remote processing completed for %s in %.2fs", doc_id, remote_latency
         )
 
+        if not result:
+            raise RuntimeError("Remote PDF extraction returned no data")
+
         text_content = result.get("markdown", "")
         page_count = result.get("page_count", 0)
 
@@ -452,24 +455,46 @@ def process_pdf(doc_id: str, filepath: str):
         db = get_db()
         db.execute(
             """UPDATE documents
-               SET status='completed', text_content=?, tables_json=?, unstructured_text=?, page_count=?
+               SET text_content=?, tables_json=?, unstructured_text=?, page_count=?
                WHERE id=?""",
             (text_content, json.dumps(tables), unstructured_text, page_count, doc_id),
         )
         db.commit()
         db.close()
-        overall_latency = time.time() - overall_start
-        logger.info("Processing completed for %s in %.2fs", doc_id, overall_latency)
 
-        # Send extracted text to MacBook for PO extraction
+        # --- PO Extraction Phase ---
+        db = get_db()
+        db.execute(
+            "UPDATE documents SET status='analyzing' WHERE id=?",
+            (doc_id,),
+        )
+        db.commit()
+        db.close()
+        logger.info("Starting PO extraction (analyzing) for %s", doc_id)
+
         start_time = time.time()
         po_data = extract_po_remote(text_content, unstructured_text)
         latency = time.time() - start_time
+
+        db = get_db()
         if po_data:
             logger.info("PO extraction completed for %s in %.2fs", doc_id, latency)
             persist_extracted_po(doc_id, po_data)
+            db.execute(
+                "UPDATE documents SET status='completed' WHERE id=?",
+                (doc_id,),
+            )
         else:
             logger.error("PO extraction failed for %s", doc_id)
+            db.execute(
+                "UPDATE documents SET status='error', error=? WHERE id=?",
+                ("PO extraction failed — no data returned from LLM", doc_id),
+            )
+        db.commit()
+        db.close()
+
+        overall_latency = time.time() - overall_start
+        logger.info("Processing completed for %s in %.2fs", doc_id, overall_latency)
 
     except Exception as exc:
         logger.exception("Remote PDF processing failed for %s", doc_id)

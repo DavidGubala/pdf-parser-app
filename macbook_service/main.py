@@ -305,11 +305,19 @@ Extract the following information into a strict JSON format:
 - po_number: The Purchase Order number.
 - po_date: The date of the PO in YYYY-MM-DD format.
 - items: A list of line items, each containing:
-    - item_name: The part number or primary identifier.
-    - description: The full description of the item.
+    - item_name: The part number or primary identifier. This MUST be a short string of letters and numbers (e.g., "ABC-123", "PN45678"). Do NOT include descriptive sentences or full words here.
+    - description: The full description of the item. This is where actual descriptive words belong (e.g., "Stainless steel bracket, 4-inch").
     - quantity: The ordered quantity.
     - unit_price: The price per unit.
     - due_date: The required delivery date in YYYY-MM-DD format.
+
+DUE DATE EXTRACTION GUIDANCE:
+- Look for due dates in multiple places: column headers labeled "Required Delivery Date", "Ship Date", "Due Date", or similar.
+- Due dates may appear per-item in a table row, OR as a single date for the entire PO (often near the top or in a header section).
+- If every item shares the same due date, repeat that date for each item.
+- If no due date is found for an item, use null.
+- Common date formats in POs: MM/DD/YYYY, MMM DD YYYY, DD-MMM-YYYY. Convert all to YYYY-MM-DD.
+- Watch for relative dates like "ASAP" or "TBD" — use null for these.
 
 If a value is not found, use null. Return ONLY the JSON object.
 """
@@ -370,6 +378,12 @@ async def extract_po(
 {req.markdown}
 
 Extract into strict JSON with: company_name, po_number, po_date, items (each with item_name, description, quantity, unit_price, due_date).
+
+CRITICAL:
+- item_name must be ONLY a short part number / SKU (letters, numbers, dashes). Example: "ABC-123", "PN45678". Do NOT put full sentences or descriptive text here.
+- description is where the actual descriptive words belong (e.g., "Stainless steel bracket, 4-inch").
+- due_date: Check per-item table rows for delivery dates. If the PO has a single global due date (e.g., in a header section like "Required Delivery Date: 05/15/2026"), apply that same date to every item. Convert all dates to YYYY-MM-DD format.
+
 Return ONLY the JSON object."""
 
         payload = {

@@ -109,6 +109,7 @@ If needed, you can further use the `web_scraper.py` file to scrape the web page 
 - Auth uses Flask sessions with `werkzeug.security` password hashing. Users stored in SQLite `users` table. Secret key from `SECRET_KEY` env var.
 - Railway deployment: gunicorn as WSGI server, `railway.json` for start command, `PORT` env var for binding.
 - JarBorne is the user's company (vendor/supplier). The "Company Name" on POs should be the **customer/buyer** (Ship To), not the vendor. Extract from "Ship To:" field.
+- For multi-stage background processing, use explicit per-stage DB status values (`processing` → `analyzing` → `completed`) instead of a single `processing` flag. This lets the frontend show accurate progress and only mark done when the final stage finishes.
 
 # Scratchpad
 
@@ -154,7 +155,7 @@ Extend the PDF Parse app to extract PO-specific fields (Company Name, Items with
 [X] Seed script (seed_user.py) for creating user accounts
 [X] Railway deployment config (Procfile, runtime.txt, railway.json, gunicorn)
 
-## Current Task: Split-Tier Architecture (Linux Web Host + MacBook Compute Node)
+## Previous Task: Split-Tier Architecture (Linux Web Host + MacBook Compute Node)
 
 ### Problem
 Linux server has NVIDIA GTX 1060 3GB Pascal GPU — incompatible with PyTorch 2.4+ cuDNN 9.x. Also insufficient VRAM for Docling's RT-DETR model. MacBook (Apple Silicon) can run Docling on CPU/MPS and Ollama on Neural Engine/Metal.
@@ -182,6 +183,20 @@ Keep public website on always-on Linux machine, offload PDF processing (Docling)
 [X] Update docker-compose.yml: remove GPU reservations, add PDF_SERVICE_URL/PDF_API_KEY/OLLAMA_URL
 [X] Update docker-compose.dev.yml: remove GPU reservations, add remote service env vars
 [X] Create .env.example with all required environment variables
-[ ] Test end-to-end: upload PDF → remote processing → UI display
-[ ] Deploy macbook_service on MacBook and verify health check
-[ ] Update Railway deployment docs for new env vars
+
+## Current Task: Fix Processing Status & Loading Bar
+
+### Problem
+After upload, the document status immediately shows "Completed" once the remote PDF extraction returns, but the LLM call for PO extraction may still be running. The user sees incomplete/missing PO data. The loading UI is just a small spinner in the badge — not informative enough for a multi-stage process.
+
+### Solution
+Introduce a multi-stage status: `processing` (PDF extraction) → `analyzing` (LLM PO extraction) → `completed` (done). Update the frontend to show a determinate progress bar with stage labels. Poll until `completed` or `error`.
+
+### Plan
+[X] Add new status value `analyzing` to backend (app.py)
+[X] Update `process_pdf()` to set `analyzing` before LLM call and `completed` after
+[X] Ensure error handling covers both PDF and LLM stages
+[X] Update frontend badgeHTML() to show stage labels and a progress bar
+[X] Add CSS for determinate progress bar and stage colors
+[X] Update polling logic to keep polling through `analyzing`
+[X] Test end-to-end upload flow
