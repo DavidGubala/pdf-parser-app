@@ -2,13 +2,14 @@
 MacBook PDF Processing Microservice
 
 FastAPI service that runs on the MacBook and handles PDF extraction
-via Docling. Bound to Tailscale IP for security.
+via Docling and Unstructured. Bound to Tailscale IP for security.
 
 Usage:
     export PDF_API_KEY="your-secret-key"
     uvicorn main:app --host "$(tailscale ip -4)" --port 8000
 """
 
+import json
 import logging
 import logging.handlers
 import os
@@ -131,6 +132,7 @@ class ProcessingResult(BaseModel):
 
     markdown: str
     text: str
+    unstructured_text: str
     page_count: int
     table_count: int
     processing_time_ms: float
@@ -203,6 +205,27 @@ async def process_pdf(file: UploadFile = File(...)) -> ProcessingResult:
         markdown_content = doc.export_to_markdown()
         text_content = doc.export_to_text()
 
+        # Extract unstructured text using Unstructured
+        unstructured_text = ""
+        try:
+            unstructured_start = time.time()
+            from unstructured.partition.pdf import partition_pdf
+
+            elements = partition_pdf(filename=tmp_path)
+            unstructured_text = "\n\n".join([str(el) for el in elements])
+            unstructured_latency = time.time() - unstructured_start
+            logger.info(
+                "Unstructured processing completed for %s in %.2fs",
+                file.filename,
+                unstructured_latency,
+            )
+        except Exception as ue:
+            logger.warning(
+                "Unstructured processing failed for %s: %s", file.filename, ue
+            )
+            # Fall back to docling plain text
+            unstructured_text = text_content
+
         # Extract page count (handle method vs property)
         if callable(getattr(doc, "num_pages", None)):
             page_count = doc.num_pages()
@@ -237,6 +260,7 @@ async def process_pdf(file: UploadFile = File(...)) -> ProcessingResult:
         return ProcessingResult(
             markdown=markdown_content,
             text=text_content,
+            unstructured_text=unstructured_text,
             page_count=page_count,
             table_count=table_count,
             processing_time_ms=processing_time_ms,
@@ -262,6 +286,33 @@ class ChatRequest(BaseModel):
     messages: list
     stream: bool = False
     format: str | None = None
+
+
+class ExtractPORequest(BaseModel):
+    markdown: str
+    unstructured_text: str
+    model: str = "qwen2.5:7b"
+
+
+SYSTEM_PROMPT = """You are a professional Purchase Order (PO) extraction expert.
+Your task is to extract structured data from the provided document content.
+You will be provided with two versions of the document:
+1. Unstructured Text: A flat reading of the document.
+2. Markdown Text: A structured markdown representation.
+
+Extract the following information into a strict JSON format:
+- company_name: The name of the company that issued the PO (the buyer/customer).
+- po_number: The Purchase Order number.
+- po_date: The date of the PO in YYYY-MM-DD format.
+- items: A list of line items, each containing:
+    - item_name: The part number or primary identifier.
+    - description: The full description of the item.
+    - quantity: The ordered quantity.
+    - unit_price: The price per unit.
+    - due_date: The required delivery date in YYYY-MM-DD format.
+
+If a value is not found, use null. Return ONLY the JSON object.
+"""
 
 
 @app.post("/process-ollama")
@@ -297,6 +348,65 @@ async def process_ollama(
     except Exception as e:
         logger.exception("Ollama proxy error")
         raise HTTPException(status_code=502, detail=f"Ollama error: {str(e)}")
+
+
+@app.post("/extract-po")
+async def extract_po(
+    req: ExtractPORequest,
+    _: HTTPAuthorizationCredentials = Depends(verify_token),
+) -> dict:
+    """Extract Purchase Order data from text using local Ollama."""
+    try:
+        import requests
+
+        ollama_url = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
+
+        prompt = f"""Please extract the PO data from the following sources:
+
+### UNSTRUCTURED TEXT
+{req.unstructured_text}
+
+### MARKDOWN STRUCTURE
+{req.markdown}
+
+Extract into strict JSON with: company_name, po_number, po_date, items (each with item_name, description, quantity, unit_price, due_date).
+Return ONLY the JSON object."""
+
+        payload = {
+            "model": req.model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            "stream": False,
+            "format": "json",
+        }
+
+        logger.info("Extracting PO via Ollama: model=%s", req.model)
+        resp = requests.post(
+            f"{ollama_url}/api/chat",
+            json=payload,
+            timeout=120,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        raw_content = data["message"]["content"]
+
+        # Parse and validate JSON
+        po_data = json.loads(raw_content)
+        logger.info(
+            "PO extraction successful: company=%s items=%d",
+            po_data.get("company_name", "N/A"),
+            len(po_data.get("items", [])),
+        )
+        return po_data
+
+    except json.JSONDecodeError as e:
+        logger.error("Failed to parse LLM JSON response: %s", e)
+        raise HTTPException(status_code=502, detail=f"Invalid JSON from LLM: {str(e)}")
+    except Exception as e:
+        logger.exception("PO extraction failed")
+        raise HTTPException(status_code=502, detail=f"PO extraction failed: {str(e)}")
 
 
 @app.get("/config")

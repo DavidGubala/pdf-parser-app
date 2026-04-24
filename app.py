@@ -345,45 +345,20 @@ def _row_to_dict(row):
 # LLM Extraction Logic (Ollama Integration)
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """You are a professional Purchase Order (PO) extraction expert.
-Your task is to extract structured data from the provided document content.
-You will be provided with three versions of the document:
-1. Unstructured Text: A flat reading of the document.
-2. Markdown Text: A structured markdown representation.
-3. Tables: Specific tables extracted as markdown.
 
-Extract the following information into a strict JSON format:
-- company_name: The name of the company that issued the PO (the buyer/customer).
-- po_number: The Purchase Order number.
-- po_date: The date of the PO in YYYY-MM-DD format.
-- items: A list of line items, each containing:
-    - item_name: The part number or primary identifier.
-    - description: The full description of the item.
-    - quantity: The ordered quantity.
-    - unit_price: The price per unit.
-    - due_date: The required delivery date in YYYY-MM-DD format.
-
-If a value is not found, use null. Return ONLY the JSON object.
-"""
-
-
-def query_ollama(prompt, system_prompt=SYSTEM_PROMPT):
-    """Query Ollama via the authenticated MacBook FastAPI proxy."""
+def extract_po_remote(markdown: str, unstructured_text: str) -> dict | None:
+    """Send extracted text to MacBook for PO extraction via Ollama."""
     if not PDF_SERVICE_URL:
-        logger.error("PDF_SERVICE_URL not configured — cannot reach Ollama proxy")
+        logger.error("PDF_SERVICE_URL not configured — cannot reach extraction service")
         return None
 
-    url = f"{PDF_SERVICE_URL}/process-ollama"
+    url = f"{PDF_SERVICE_URL}/extract-po"
     model = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
 
     payload = {
+        "markdown": markdown,
+        "unstructured_text": unstructured_text,
         "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-        ],
-        "stream": False,
-        "format": "json",
     }
 
     try:
@@ -394,97 +369,22 @@ def query_ollama(prompt, system_prompt=SYSTEM_PROMPT):
             timeout=120,
         )
         response.raise_for_status()
-        return response.json()["message"]["content"]
+        return response.json()
     except Exception as e:
-        logger.error("Ollama API error: %s", e)
+        logger.error("PO extraction service error: %s", e)
         return None
 
 
-def get_relevant_corrections(doc_id):
-    """Retrieve recent corrections to use as few-shot examples."""
-    db = get_db()
-    # Get the last 5 corrections to provide a variety of 'lessons'
-    corrections = db.execute(
-        "SELECT field_name, original_value, corrected_value FROM po_corrections ORDER BY timestamp DESC LIMIT 5"
-    ).fetchall()
-    db.close()
-
-    if not corrections:
-        return ""
-
-    lessons = [
-        "The following mistakes were made in previous extractions. Please avoid them:"
-    ]
-    for c in corrections:
-        lessons.append(
-            f"- Field '{c['field_name']}': previously extracted as '{c['original_value']}', but corrected to '{c['corrected_value']}'"
-        )
-
-    return "\n".join(lessons)
-
-
-def build_extraction_prompt(
-    text_content, tables_json, unstructured_text, lessons_learned=""
-):
-    """Combine all available data sources and lessons into a single prompt for the LLM."""
-    tables = json.loads(tables_json) if isinstance(tables_json, str) else tables_json
-    tables_md = "\n\n".join([t.get("markdown", "") for t in tables])
-
-    lessons_section = (
-        f"\n### LESSONS FROM PREVIOUS EXTRACTIONS\n{lessons_learned}\n"
-        if lessons_learned
-        else ""
-    )
-    prompt = f"""Please extract the PO data from the following sources:
-{lessons_section}
- ### UNSTRUCTURED TEXT
- {unstructured_text}
-
-### MARKDOWN STRUCTURE
-{text_content}
-
-### EXTRACTED TABLES
-{tables_md}
-"""
-    return prompt
-
-
-def extract_po_with_llm(doc_id, text_content, tables_json, unstructured_text):
-    """Orchestrate the LLM extraction and persist results to the database."""
-    logger.info("Starting LLM extraction for document %s", doc_id)
-
-    # Retrieve lessons learned from the correction log
-    lessons = get_relevant_corrections(doc_id)
-
-    prompt = build_extraction_prompt(
-        text_content, tables_json, unstructured_text, lessons
-    )
-
-    start_time = time.time()
-    raw_response = query_ollama(prompt)
-    latency = time.time() - start_time
-
-    # Log the raw interaction for debugging and auditing
-    db = get_db()
-    db.execute(
-        """INSERT INTO llm_logs (document_id, prompt, response, latency, timestamp)
-           VALUES (?, ?, ?, ?, ?)""",
-        (doc_id, prompt, raw_response, latency, datetime.now(timezone.utc).isoformat()),
-    )
-    db.commit()
-    db.close()
-
-    if not raw_response:
-        logger.error("No response from LLM for document %s", doc_id)
+def persist_extracted_po(doc_id: str, data: dict) -> None:
+    """Persist PO extraction results from the MacBook to the database."""
+    if not data:
         return
 
+    po_id = uuid.uuid4().hex[:12]
+    now = datetime.now(timezone.utc).isoformat()
+
+    db = get_db()
     try:
-        data = json.loads(raw_response)
-
-        po_id = uuid.uuid4().hex[:12]
-        now = datetime.now(timezone.utc).isoformat()
-
-        db = get_db()
         db.execute(
             """INSERT INTO purchase_orders (id, document_id, company_name, po_number, po_date, created_at)
                VALUES (?, ?, ?, ?, ?, ?)""",
@@ -512,11 +412,12 @@ def extract_po_with_llm(doc_id, text_content, tables_json, unstructured_text):
                 ),
             )
         db.commit()
+        logger.info("PO extraction persisted for %s", doc_id)
+    except Exception as e:
+        logger.error("Failed to persist PO data for %s: %s", doc_id, e)
+        db.rollback()
+    finally:
         db.close()
-        logger.info("LLM extraction successful for %s", doc_id)
-
-    except (json.JSONDecodeError, KeyError) as e:
-        logger.error("Failed to parse LLM JSON for %s: %s", doc_id, e)
 
 
 # ---------------------------------------------------------------------------
@@ -542,21 +443,11 @@ def process_pdf(doc_id: str, filepath: str):
         text_content = result.get("markdown", "")
         page_count = result.get("page_count", 0)
 
-        # The remote service returns markdown; we store minimal table info
-        # since the full markdown contains tables inline
+        # Skip separate table extraction — let the LLM infer from markdown
         tables = []
-        tables.append(
-            {
-                "index": 0,
-                "markdown": text_content,
-                "html": f"<pre>{text_content}</pre>",
-                "rows": 0,
-                "cols": 0,
-            }
-        )
 
-        # Use the plain text version as unstructured text
-        unstructured_text = result.get("text", "")
+        # Use unstructured text from the remote service (Unstructured library output)
+        unstructured_text = result.get("unstructured_text", result.get("text", ""))
 
         db = get_db()
         db.execute(
@@ -570,8 +461,15 @@ def process_pdf(doc_id: str, filepath: str):
         overall_latency = time.time() - overall_start
         logger.info("Processing completed for %s in %.2fs", doc_id, overall_latency)
 
-        # Trigger LLM extraction now that data is prepared
-        extract_po_with_llm(doc_id, text_content, json.dumps(tables), unstructured_text)
+        # Send extracted text to MacBook for PO extraction
+        start_time = time.time()
+        po_data = extract_po_remote(text_content, unstructured_text)
+        latency = time.time() - start_time
+        if po_data:
+            logger.info("PO extraction completed for %s in %.2fs", doc_id, latency)
+            persist_extracted_po(doc_id, po_data)
+        else:
+            logger.error("PO extraction failed for %s", doc_id)
 
     except Exception as exc:
         logger.exception("Remote PDF processing failed for %s", doc_id)
