@@ -257,20 +257,39 @@ async def process_pdf(file: UploadFile = File(...)) -> ProcessingResult:
                 pass
 
 
+class ChatRequest(BaseModel):
+    model: str
+    messages: list
+    stream: bool = False
+    format: str | None = None
+
+
 @app.post("/process-ollama")
 async def process_ollama(
-    model: str = "qwen2.5",
-    prompt: str = "",
+    chat_req: ChatRequest,
     _: HTTPAuthorizationCredentials = Depends(verify_token),
 ) -> dict:
-    """Proxy endpoint for Ollama inference (optional)."""
+    """Proxy Ollama /api/chat requests from the Linux server."""
     try:
         import requests as req
 
         ollama_url = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
+        payload = {
+            "model": chat_req.model,
+            "messages": chat_req.messages,
+            "stream": chat_req.stream,
+        }
+        if chat_req.format:
+            payload["format"] = chat_req.format
+
+        logger.info(
+            "Proxying Ollama chat request: model=%s messages=%d",
+            chat_req.model,
+            len(chat_req.messages),
+        )
         resp = req.post(
-            f"{ollama_url}/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False},
+            f"{ollama_url}/api/chat",
+            json=payload,
             timeout=120,
         )
         resp.raise_for_status()

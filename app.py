@@ -368,8 +368,12 @@ If a value is not found, use null. Return ONLY the JSON object.
 
 
 def query_ollama(prompt, system_prompt=SYSTEM_PROMPT):
-    """Query the local Ollama server for structured extraction."""
-    url = f"{OLLAMA_URL}/api/chat"
+    """Query Ollama via the authenticated MacBook FastAPI proxy."""
+    if not PDF_SERVICE_URL:
+        logger.error("PDF_SERVICE_URL not configured — cannot reach Ollama proxy")
+        return None
+
+    url = f"{PDF_SERVICE_URL}/process-ollama"
     model = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
 
     payload = {
@@ -383,7 +387,12 @@ def query_ollama(prompt, system_prompt=SYSTEM_PROMPT):
     }
 
     try:
-        response = requests.post(url, json=payload, timeout=120)
+        response = requests.post(
+            url,
+            json=payload,
+            headers={"Authorization": f"Bearer {PDF_API_KEY}"},
+            timeout=120,
+        )
         response.raise_for_status()
         return response.json()["message"]["content"]
     except Exception as e:
