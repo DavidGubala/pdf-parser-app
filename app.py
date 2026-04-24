@@ -79,23 +79,42 @@ _root_logger.addHandler(_file_handler)
 
 logger = logging.getLogger(__name__)
 
-import torch
-from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
-from docling.datamodel.base_models import InputFormat
-from docling.datamodel.pipeline_options import PdfPipelineOptions
-from docling.document_converter import DocumentConverter, PdfFormatOption
+# ---------------------------------------------------------------------------
+# Remote PDF Service Client (MacBook Compute Node)
+# ---------------------------------------------------------------------------
 
-# Initialize Docling Converter as a singleton with GPU acceleration if available
-device = AcceleratorDevice.CUDA if torch.cuda.is_available() else AcceleratorDevice.CPU
-logger.info("Initializing Docling with accelerator: %s", device.name)
-
-accelerator_options = AcceleratorOptions(num_threads=8, device=device)
-pipeline_options = PdfPipelineOptions()
-pipeline_options.accelerator_options = accelerator_options
-
-converter = DocumentConverter(
-    format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}
+PDF_SERVICE_URL = os.getenv("PDF_SERVICE_URL")
+PDF_API_KEY = os.getenv("PDF_API_KEY")
+OLLAMA_URL = os.getenv(
+    "OLLAMA_URL", os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434")
 )
+
+
+def extract_pdf_remote(file_path: str) -> dict:
+    """Send PDF to MacBook for Docling processing."""
+    if not PDF_SERVICE_URL:
+        raise RuntimeError("PDF_SERVICE_URL not configured")
+    with open(file_path, "rb") as f:
+        resp = requests.post(
+            f"{PDF_SERVICE_URL}/process-pdf",
+            files={"file": (os.path.basename(file_path), f, "application/pdf")},
+            headers={"Authorization": f"Bearer {PDF_API_KEY}"},
+            timeout=300,
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def ask_ollama_remote(model: str, prompt: str) -> str:
+    """Send prompt to MacBook Ollama."""
+    url = f"{OLLAMA_URL}/api/generate"
+    resp = requests.post(
+        url,
+        json={"model": model, "prompt": prompt, "stream": False},
+        timeout=120,
+    )
+    resp.raise_for_status()
+    return resp.json()["response"]
 
 
 ALLOWED_EXTENSIONS = {"pdf"}
@@ -350,9 +369,7 @@ If a value is not found, use null. Return ONLY the JSON object.
 
 def query_ollama(prompt, system_prompt=SYSTEM_PROMPT):
     """Query the local Ollama server for structured extraction."""
-    url = (
-        os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434") + "/api/chat"
-    )
+    url = f"{OLLAMA_URL}/api/chat"
     model = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
 
     payload = {
@@ -499,62 +516,38 @@ def extract_po_with_llm(doc_id, text_content, tables_json, unstructured_text):
 
 
 def process_pdf(doc_id: str, filepath: str):
-    """Parse a PDF via Docling and store results in the database."""
-    logger.info("Starting PDF processing for %s (%s)", doc_id, filepath)
+    """Send PDF to MacBook for remote Docling processing and store results."""
+    logger.info("Starting remote PDF processing for %s (%s)", doc_id, filepath)
     overall_start = time.time()
     try:
-        # --- Docling Phase ---
-        docling_start = time.time()
-        logger.info("Running Docling conversion for %s...", doc_id)
+        # --- Remote Processing Phase ---
+        remote_start = time.time()
+        logger.info("Sending PDF to remote service for %s...", doc_id)
 
-        # Clear GPU memory cache before heavy Docling inference
-        # Critical for 3GB cards like GTX 1060 to avoid CUDNN_STATUS_NOT_INITIALIZED
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            logger.info("Cleared GPU memory cache before Docling conversion")
-
-        result = converter.convert(filepath)
-        doc = result.document
-        docling_latency = time.time() - docling_start
+        result = extract_pdf_remote(filepath)
+        remote_latency = time.time() - remote_start
         logger.info(
-            "Docling conversion completed for %s in %.2fs", doc_id, docling_latency
+            "Remote processing completed for %s in %.2fs", doc_id, remote_latency
         )
 
-        text_content = doc.export_to_markdown()
+        text_content = result.get("markdown", "")
+        page_count = result.get("page_count", 0)
 
+        # The remote service returns markdown; we store minimal table info
+        # since the full markdown contains tables inline
         tables = []
-        for i, table in enumerate(doc.tables):
-            table_data = {
-                "index": i,
-                "markdown": table.export_to_markdown(),
+        tables.append(
+            {
+                "index": 0,
+                "markdown": text_content,
+                "html": f"<pre>{text_content}</pre>",
+                "rows": 0,
+                "cols": 0,
             }
-            try:
-                df = table.export_to_dataframe()
-                table_data["html"] = df.to_html(classes="data-table", index=False)
-                table_data["rows"] = len(df)
-                table_data["cols"] = len(df.columns)
-            except Exception:
-                table_data["html"] = f"<pre>{table.export_to_markdown()}</pre>"
-            tables.append(table_data)
+        )
 
-        page_count = doc.num_pages() if callable(getattr(doc, "num_pages", None)) else 0
-
-        # Get flat text reading using Unstructured
-        unstructured_text = ""
-        try:
-            unstructured_start = time.time()
-            from unstructured.partition.pdf import partition_pdf
-
-            elements = partition_pdf(filename=filepath)
-            unstructured_text = "\n\n".join([str(el) for el in elements])
-            unstructured_latency = time.time() - unstructured_start
-            logger.info(
-                "Unstructured processing completed for %s in %.2fs",
-                doc_id,
-                unstructured_latency,
-            )
-        except Exception as ue:
-            logger.warning("Unstructured processing failed for %s: %s", doc_id, ue)
+        # Use the plain text version as unstructured text
+        unstructured_text = result.get("text", "")
 
         db = get_db()
         db.execute(
@@ -566,18 +559,13 @@ def process_pdf(doc_id: str, filepath: str):
         db.commit()
         db.close()
         overall_latency = time.time() - overall_start
-        logger.info(
-            "Processing completed for %s in %.2fs — %d table(s) found",
-            doc_id,
-            overall_latency,
-            len(tables),
-        )
+        logger.info("Processing completed for %s in %.2fs", doc_id, overall_latency)
 
         # Trigger LLM extraction now that data is prepared
         extract_po_with_llm(doc_id, text_content, json.dumps(tables), unstructured_text)
 
     except Exception as exc:
-        logger.exception("Docling processing failed for %s", doc_id)
+        logger.exception("Remote PDF processing failed for %s", doc_id)
         db = get_db()
         db.execute(
             "UPDATE documents SET status='error', error=? WHERE id=?",

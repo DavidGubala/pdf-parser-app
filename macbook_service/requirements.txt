@@ -1,0 +1,9 @@
+# MacBook PDF Processing Microservice Dependencies
+# Install via: pip install -r requirements.txt
+
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+docling>=2.31
+pydantic>=2.0
+requests>=2.31.0
