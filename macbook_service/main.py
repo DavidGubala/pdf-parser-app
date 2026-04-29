@@ -292,6 +292,7 @@ class ExtractPORequest(BaseModel):
     markdown: str
     unstructured_text: str
     model: str = "qwen2.5:7b"
+    examples: list | None = None
 
 
 SYSTEM_PROMPT = """You are a professional Purchase Order (PO) extraction expert.
@@ -369,13 +370,26 @@ async def extract_po(
 
         ollama_url = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 
+        examples_text = ""
+        if req.examples:
+            parts = []
+            for i, ex in enumerate(req.examples, 1):
+                parts.append(
+                    f"Example {i}:\n"
+                    f"--- INPUT (Markdown) ---\n{ex.get('markdown', '')}\n"
+                    f"--- INPUT (Unstructured) ---\n{ex.get('unstructured_text', '')}\n"
+                    f"--- OUTPUT (JSON) ---\n```json\n{json.dumps(ex.get('po_data', {}), indent=2)}\n```"
+                )
+            examples_text = "\n\n".join(parts)
+            examples_text = f"\n\nHere are verified examples of correct extractions from this user. Follow these patterns exactly:\n\n{examples_text}\n\n"
+
         prompt = f"""Please extract the PO data from the following sources:
 
 ### UNSTRUCTURED TEXT
 {req.unstructured_text}
 
 ### MARKDOWN STRUCTURE
-{req.markdown}
+{req.markdown}{examples_text}
 
 Extract into strict JSON with: company_name, po_number, po_date, items (each with item_name, description, quantity, unit_price, due_date).
 
@@ -396,7 +410,11 @@ Return ONLY the JSON object."""
             "format": "json",
         }
 
-        logger.info("Extracting PO via Ollama: model=%s", req.model)
+        logger.info(
+            "Extracting PO via Ollama: model=%s examples=%d",
+            req.model,
+            len(req.examples or []),
+        )
         resp = requests.post(
             f"{ollama_url}/api/chat",
             json=payload,

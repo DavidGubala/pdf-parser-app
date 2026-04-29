@@ -1,4 +1,5 @@
 import functools
+import hashlib
 import json
 import logging
 import logging.handlers
@@ -259,6 +260,7 @@ def init_db():
             tables_json TEXT,
             unstructured_text TEXT,
             images_json TEXT,
+            content_hash TEXT,
             FOREIGN KEY (user_id) REFERENCES users(id)
         )
     """)
@@ -270,6 +272,7 @@ def init_db():
             po_number TEXT DEFAULT '',
             po_date TEXT DEFAULT '',
             created_at TEXT NOT NULL,
+            verified_at TEXT,
             FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
         )
     """)
@@ -323,6 +326,46 @@ def init_db():
         logger.info("Migrated documents table: added unstructured_text column")
     except sqlite3.OperationalError:
         pass  # column already exists
+
+    # Migrate: add verified_at to purchase_orders if missing
+    try:
+        db.execute("ALTER TABLE purchase_orders ADD COLUMN verified_at TEXT")
+        logger.info("Migrated purchase_orders table: added verified_at column")
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
+    # Migrate: add content_hash to documents if missing
+    try:
+        db.execute("ALTER TABLE documents ADD COLUMN content_hash TEXT")
+        logger.info("Migrated documents table: added content_hash column")
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
+    # Migrate: add markdown and unstructured_text to verified_examples if missing
+    try:
+        db.execute("ALTER TABLE verified_examples ADD COLUMN markdown TEXT")
+        logger.info("Migrated verified_examples table: added markdown column")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        db.execute("ALTER TABLE verified_examples ADD COLUMN unstructured_text TEXT")
+        logger.info("Migrated verified_examples table: added unstructured_text column")
+    except sqlite3.OperationalError:
+        pass
+
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS verified_examples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            document_id TEXT NOT NULL,
+            markdown TEXT,
+            unstructured_text TEXT,
+            po_data TEXT NOT NULL,
+            verified_at TEXT NOT NULL,
+            FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+        )
+    """)
+
     db.commit()
     db.close()
 
@@ -346,7 +389,9 @@ def _row_to_dict(row):
 # ---------------------------------------------------------------------------
 
 
-def extract_po_remote(markdown: str, unstructured_text: str) -> dict | None:
+def extract_po_remote(
+    markdown: str, unstructured_text: str, examples: list | None = None
+) -> dict | None:
     """Send extracted text to MacBook for PO extraction via Ollama."""
     if not PDF_SERVICE_URL:
         logger.error("PDF_SERVICE_URL not configured — cannot reach extraction service")
@@ -355,11 +400,13 @@ def extract_po_remote(markdown: str, unstructured_text: str) -> dict | None:
     url = f"{PDF_SERVICE_URL}/extract-po"
     model = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
 
-    payload = {
+    payload: dict[str, object] = {
         "markdown": markdown,
         "unstructured_text": unstructured_text,
         "model": model,
     }
+    if examples:
+        payload["examples"] = examples
 
     try:
         response = requests.post(
@@ -373,6 +420,27 @@ def extract_po_remote(markdown: str, unstructured_text: str) -> dict | None:
     except Exception as e:
         logger.error("PO extraction service error: %s", e)
         return None
+
+
+def get_verified_examples(user_id: str, limit: int = 3) -> list:
+    """Fetch the most recent verified PO extractions for few-shot prompting."""
+    db = get_db()
+    rows = db.execute(
+        """SELECT markdown, unstructured_text, po_data FROM verified_examples
+           WHERE user_id = ?
+           ORDER BY verified_at DESC
+           LIMIT ?""",
+        (user_id, limit),
+    ).fetchall()
+    db.close()
+    return [
+        {
+            "markdown": r["markdown"],
+            "unstructured_text": r["unstructured_text"],
+            "po_data": json.loads(r["po_data"]),
+        }
+        for r in rows
+    ]
 
 
 def persist_extracted_po(doc_id: str, data: dict) -> None:
@@ -425,7 +493,44 @@ def persist_extracted_po(doc_id: str, data: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def process_pdf(doc_id: str, filepath: str):
+def run_po_extraction(
+    doc_id: str, text_content: str, unstructured_text: str, user_id: str
+):
+    """Run LLM PO extraction and persist results."""
+    db = get_db()
+    db.execute(
+        "UPDATE documents SET status='analyzing' WHERE id=?",
+        (doc_id,),
+    )
+    db.commit()
+    db.close()
+    logger.info("Starting PO extraction (analyzing) for %s", doc_id)
+
+    examples = get_verified_examples(user_id)
+
+    start_time = time.time()
+    po_data = extract_po_remote(text_content, unstructured_text, examples)
+    latency = time.time() - start_time
+
+    db = get_db()
+    if po_data:
+        logger.info("PO extraction completed for %s in %.2fs", doc_id, latency)
+        persist_extracted_po(doc_id, po_data)
+        db.execute(
+            "UPDATE documents SET status='completed' WHERE id=?",
+            (doc_id,),
+        )
+    else:
+        logger.error("PO extraction failed for %s", doc_id)
+        db.execute(
+            "UPDATE documents SET status='error', error=? WHERE id=?",
+            ("PO extraction failed — no data returned from LLM", doc_id),
+        )
+    db.commit()
+    db.close()
+
+
+def process_pdf(doc_id: str, filepath: str, user_id: str = ""):
     """Send PDF to MacBook for remote Docling processing and store results."""
     logger.info("Starting remote PDF processing for %s (%s)", doc_id, filepath)
     overall_start = time.time()
@@ -463,35 +568,7 @@ def process_pdf(doc_id: str, filepath: str):
         db.close()
 
         # --- PO Extraction Phase ---
-        db = get_db()
-        db.execute(
-            "UPDATE documents SET status='analyzing' WHERE id=?",
-            (doc_id,),
-        )
-        db.commit()
-        db.close()
-        logger.info("Starting PO extraction (analyzing) for %s", doc_id)
-
-        start_time = time.time()
-        po_data = extract_po_remote(text_content, unstructured_text)
-        latency = time.time() - start_time
-
-        db = get_db()
-        if po_data:
-            logger.info("PO extraction completed for %s in %.2fs", doc_id, latency)
-            persist_extracted_po(doc_id, po_data)
-            db.execute(
-                "UPDATE documents SET status='completed' WHERE id=?",
-                (doc_id,),
-            )
-        else:
-            logger.error("PO extraction failed for %s", doc_id)
-            db.execute(
-                "UPDATE documents SET status='error', error=? WHERE id=?",
-                ("PO extraction failed — no data returned from LLM", doc_id),
-            )
-        db.commit()
-        db.close()
+        run_po_extraction(doc_id, text_content, unstructured_text, user_id)
 
         overall_latency = time.time() - overall_start
         logger.info("Processing completed for %s in %.2fs", doc_id, overall_latency)
@@ -538,6 +615,46 @@ def upload_file():
     if ext not in ALLOWED_EXTENSIONS:
         return jsonify({"error": f"File type '.{ext}' not allowed. Upload a PDF."}), 400
 
+    # Compute content hash for duplicate detection
+    file_content = file.read()
+    file.seek(0)
+    content_hash = hashlib.md5(file_content).hexdigest()
+
+    uid = current_user_id()
+    db = get_db()
+
+    # Check for duplicate by same user
+    existing = db.execute(
+        "SELECT id, status FROM documents WHERE user_id=? AND content_hash=? ORDER BY upload_time DESC LIMIT 1",
+        (uid, content_hash),
+    ).fetchone()
+
+    if existing:
+        # Check if the existing document's PO is verified
+        verified_po = db.execute(
+            """SELECT 1 FROM purchase_orders po
+               JOIN documents d ON po.document_id = d.id
+               WHERE d.id = ? AND po.verified_at IS NOT NULL""",
+            (existing["id"],),
+        ).fetchone()
+
+        db.close()
+        logger.info(
+            "Duplicate upload detected: %s -> existing %s (verified: %s)",
+            filename,
+            existing["id"],
+            bool(verified_po),
+        )
+        return jsonify(
+            {
+                "existing": True,
+                "document_id": existing["id"],
+                "status": existing["status"],
+                "filename": filename,
+                "is_verified": bool(verified_po),
+            }
+        ), 200
+
     doc_id = uuid.uuid4().hex[:12]
     safe_name = secure_filename(filename)
     stored_name = f"{doc_id}_{safe_name}"
@@ -545,18 +662,16 @@ def upload_file():
     file.save(str(filepath))
 
     now = datetime.now(timezone.utc).isoformat()
-    uid = current_user_id()
-    db = get_db()
     db.execute(
-        """INSERT INTO documents (id, user_id, filename, original_name, upload_time, status)
-           VALUES (?, ?, ?, ?, ?, 'processing')""",
-        (doc_id, uid, stored_name, file.filename, now),
+        """INSERT INTO documents (id, user_id, filename, original_name, upload_time, status, content_hash)
+           VALUES (?, ?, ?, ?, ?, 'processing', ?)""",
+        (doc_id, uid, stored_name, file.filename, now, content_hash),
     )
     db.commit()
     db.close()
 
     thread = threading.Thread(
-        target=process_pdf, args=(doc_id, str(filepath)), daemon=True
+        target=process_pdf, args=(doc_id, str(filepath), uid), daemon=True
     )
     thread.start()
 
@@ -564,6 +679,55 @@ def upload_file():
     return jsonify(
         {"id": doc_id, "filename": file.filename, "status": "processing"}
     ), 201
+
+
+@app.route("/api/documents/<doc_id>/reextract", methods=["POST"])
+@login_required
+def reextract_document(doc_id):
+    """Re-run PO extraction on an existing document."""
+    uid = current_user_id()
+    db = get_db()
+    doc = db.execute(
+        "SELECT text_content, unstructured_text, status FROM documents WHERE id=? AND user_id=?",
+        (doc_id, uid),
+    ).fetchone()
+
+    if not doc:
+        db.close()
+        return jsonify({"error": "Document not found"}), 404
+
+    text_content = doc["text_content"] or ""
+    unstructured_text = doc["unstructured_text"] or ""
+
+    if not text_content:
+        db.close()
+        return jsonify({"error": "Document has no extracted text. Re-upload?"}), 400
+
+    # Delete existing PO data for this document
+    po_rows = db.execute(
+        "SELECT id FROM purchase_orders WHERE document_id=?", (doc_id,)
+    ).fetchall()
+    for po in po_rows:
+        db.execute("DELETE FROM po_items WHERE po_id=?", (po["id"],))
+    db.execute("DELETE FROM po_corrections WHERE document_id=?", (doc_id,))
+    db.execute("DELETE FROM purchase_orders WHERE document_id=?", (doc_id,))
+    db.execute(
+        "UPDATE documents SET status='analyzing', error=NULL WHERE id=?",
+        (doc_id,),
+    )
+    db.commit()
+    db.close()
+
+    uid = current_user_id()
+    thread = threading.Thread(
+        target=run_po_extraction,
+        args=(doc_id, text_content, unstructured_text, uid),
+        daemon=True,
+    )
+    thread.start()
+
+    logger.info("Re-extraction started for %s", doc_id)
+    return jsonify({"status": "analyzing", "document_id": doc_id})
 
 
 @app.route("/api/documents", methods=["GET"])
@@ -797,24 +961,30 @@ def correct_purchase_order():
         for corr in corrections:
             entity_type = corr.get("entity_type")
             entity_id = corr.get("entity_id")
-            field = corr.get("field_name")
-            new_val = corr.get("new_value")
 
             if entity_type == "PO":
+                field = corr.get("field_name")
+                new_val = corr.get("new_value")
                 if field not in {"company_name", "po_number", "po_date"}:
                     continue
-                # Get original value
                 row = db.execute(
                     f"SELECT {field} FROM purchase_orders WHERE id = ?", (entity_id,)
                 ).fetchone()
                 original_val = row[0] if row else None
-
-                # Update
                 db.execute(
                     f"UPDATE purchase_orders SET {field} = ? WHERE id = ?",
                     (new_val, entity_id),
                 )
+                db.execute(
+                    """INSERT INTO po_corrections
+                       (document_id, entity_type, entity_id, field_name, original_value, corrected_value, timestamp)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (doc_id, entity_type, entity_id, field, original_val, new_val, now),
+                )
+
             elif entity_type == "ITEM":
+                field = corr.get("field_name")
+                new_val = corr.get("new_value")
                 if field not in {
                     "item_name",
                     "description",
@@ -823,27 +993,43 @@ def correct_purchase_order():
                     "unit_price",
                 }:
                     continue
-                # Get original value
                 row = db.execute(
                     f"SELECT {field} FROM po_items WHERE id = ?", (entity_id,)
                 ).fetchone()
                 original_val = row[0] if row else None
-
-                # Update
                 db.execute(
                     f"UPDATE po_items SET {field} = ? WHERE id = ?",
                     (new_val, entity_id),
                 )
+                db.execute(
+                    """INSERT INTO po_corrections
+                       (document_id, entity_type, entity_id, field_name, original_value, corrected_value, timestamp)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (doc_id, entity_type, entity_id, field, original_val, new_val, now),
+                )
+
+            elif entity_type == "DELETE_ITEM":
+                db.execute("DELETE FROM po_items WHERE id = ?", (entity_id,))
+
+            elif entity_type == "ADD_ITEM":
+                po_id = corr.get("po_id")
+                new_id = uuid.uuid4().hex[:12]
+                db.execute(
+                    """INSERT INTO po_items (id, po_id, item_name, description, due_date, quantity, unit_price)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        new_id,
+                        po_id,
+                        corr.get("item_name", ""),
+                        corr.get("description", ""),
+                        corr.get("due_date", ""),
+                        corr.get("quantity", ""),
+                        corr.get("unit_price", ""),
+                    ),
+                )
+
             else:
                 continue
-
-            # Log correction
-            db.execute(
-                """INSERT INTO po_corrections
-                   (document_id, entity_type, entity_id, field_name, original_value, corrected_value, timestamp)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (doc_id, entity_type, entity_id, field, original_val, new_val, now),
-            )
 
         db.commit()
         return jsonify({"status": "success"})
@@ -865,6 +1051,109 @@ def export_corrections():
     db.close()
 
     return jsonify([dict(c) for c in corrections])
+
+
+@app.route("/api/purchase-orders/<po_id>/verify", methods=["POST"])
+@login_required
+def verify_purchase_order(po_id):
+    """Mark a Purchase Order as manually verified by the user."""
+    uid = current_user_id()
+    db = get_db()
+
+    logger.info("Verifying PO %s for user %s", po_id, uid)
+    # Verify ownership via document
+    po = db.execute(
+        """
+        SELECT po.id, po.company_name, po.po_number, po.po_date, po.document_id
+        FROM purchase_orders po
+        JOIN documents d ON po.document_id = d.id
+        WHERE po.id = ? AND d.user_id = ?
+    """,
+        (po_id, uid),
+    ).fetchone()
+
+    if not po:
+        logger.warning("PO %s not found or not owned by user %s", po_id, uid)
+        db.close()
+        return jsonify({"error": "Purchase order not found"}), 404
+
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        "UPDATE purchase_orders SET verified_at = ? WHERE id = ?",
+        (now, po_id),
+    )
+
+    # Snapshot verified PO data and original text for few-shot learning
+    doc_text = db.execute(
+        "SELECT text_content, unstructured_text FROM documents WHERE id = ?",
+        (po["document_id"],),
+    ).fetchone()
+
+    items = db.execute(
+        "SELECT item_name, description, due_date, quantity, unit_price FROM po_items WHERE po_id = ?",
+        (po_id,),
+    ).fetchall()
+    po_data = {
+        "company_name": po["company_name"],
+        "po_number": po["po_number"],
+        "po_date": po["po_date"],
+        "items": [dict(item) for item in items],
+    }
+    db.execute(
+        """INSERT INTO verified_examples (user_id, document_id, markdown, unstructured_text, po_data, verified_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (
+            uid,
+            po["document_id"],
+            doc_text["text_content"],
+            doc_text["unstructured_text"],
+            json.dumps(po_data),
+            now,
+        ),
+    )
+
+    db.commit()
+    db.close()
+    logger.info("PO %s verified by user %s", po_id, uid)
+    return jsonify({"status": "verified", "verified_at": now})
+
+
+@app.route("/api/purchase-orders/<po_id>/unverify", methods=["POST"])
+@login_required
+def unverify_purchase_order(po_id):
+    """Mark a Purchase Order as unverified and remove from few-shot examples."""
+    uid = current_user_id()
+    db = get_db()
+
+    # Verify ownership via document
+    po = db.execute(
+        """
+        SELECT po.document_id FROM purchase_orders po
+        JOIN documents d ON po.document_id = d.id
+        WHERE po.id = ? AND d.user_id = ?
+    """,
+        (po_id, uid),
+    ).fetchone()
+
+    if not po:
+        db.close()
+        return jsonify({"error": "Purchase order not found"}), 404
+
+    doc_id = po["document_id"]
+
+    # 1. Clear verified_at timestamp
+    db.execute("UPDATE purchase_orders SET verified_at = NULL WHERE id = ?", (po_id,))
+
+    # 2. Remove from verified_examples table
+    db.execute(
+        "DELETE FROM verified_examples WHERE document_id = ? AND user_id = ?",
+        (doc_id, uid),
+    )
+
+    db.commit()
+    db.close()
+    logger.info("PO %s unverified by user %s", po_id, uid)
+    return jsonify({"status": "unverified"})
 
 
 # ---------------------------------------------------------------------------

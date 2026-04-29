@@ -98,9 +98,38 @@ const detailSection = $("#detail-section");
 const docsSection = $("#documents-section");
 const uploadSection = $("#upload-section");
 const detailHeader = $("#detail-header");
-const detailContent = $("#detail-content");
+
 const backBtn = $("#back-btn");
 const backSchedBtn = $("#back-schedule-btn");
+
+backBtn.onclick = () => {
+  currentView = "documents";
+  documentsView.hidden = false;
+  scheduleView.hidden = true;
+  uploadSection.hidden = false;
+  docsSection.hidden = false;
+  detailSection.hidden = true;
+  document.querySelector("main").classList.remove("detail-view-active");
+  $$(".nav-btn").forEach((b) =>
+    b.classList.toggle("active", b.dataset.view === "documents"),
+  );
+  history.pushState({ view: "documents", currentView }, "", "#documents");
+};
+
+backSchedBtn.onclick = () => {
+  currentView = "schedule";
+  documentsView.hidden = true;
+  scheduleView.hidden = false;
+  uploadSection.hidden = true;
+  docsSection.hidden = true;
+  detailSection.hidden = true;
+  document.querySelector("main").classList.remove("detail-view-active");
+  $$(".nav-btn").forEach((b) =>
+    b.classList.toggle("active", b.dataset.view === "schedule"),
+  );
+  loadSchedule();
+  history.pushState({ view: "schedule", currentView }, "", "#schedule");
+};
 const refreshBtn = $("#refresh-btn");
 
 // DOM references — schedule
@@ -119,6 +148,7 @@ const calGrid = $("#cal-grid");
 
 let pollingTimer = null;
 let currentView = "documents";
+let previousDocs = [];
 let scheduleMode = "list";
 let scheduleData = null;
 let detailOrigin = "documents"; // tracks where the user came from
@@ -131,22 +161,75 @@ let calYear, calMonth;
 $$(".nav-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
     const view = btn.dataset.view;
-    if (view === currentView) return;
+    if (view === currentView && view !== "documents" && view !== "schedule")
+      return;
 
-    currentView = view;
+    if (view !== currentView) {
+      currentView = view;
+    }
     $$(".nav-btn").forEach((b) =>
       b.classList.toggle("active", b.dataset.view === view),
     );
 
+    detailSection.hidden = true;
+    document.querySelector("main").classList.remove("detail-view-active");
+
     if (view === "documents") {
       documentsView.hidden = false;
       scheduleView.hidden = true;
+      uploadSection.hidden = false;
+      docsSection.hidden = false;
     } else {
       documentsView.hidden = true;
       scheduleView.hidden = false;
       loadSchedule();
     }
+    if (view !== currentView || detailSection.hidden === false) {
+      history.pushState({ view, currentView }, "", `#${view}`);
+    }
   });
+});
+
+window.addEventListener("popstate", (e) => {
+  const state = e.state;
+  if (!state) {
+    currentView = "documents";
+    documentsView.hidden = false;
+    scheduleView.hidden = true;
+    detailSection.hidden = true;
+    uploadSection.hidden = false;
+    docsSection.hidden = false;
+    document.querySelector("main").classList.remove("detail-view-active");
+    $$(".nav-btn").forEach((b) =>
+      b.classList.toggle("active", b.dataset.view === "documents"),
+    );
+    return;
+  }
+
+  if (state.view === "detail") {
+    openDocument(state.docId, state.origin, false);
+  } else {
+    currentView = state.view;
+    $$(".nav-btn").forEach((b) =>
+      b.classList.toggle("active", b.dataset.view === state.view),
+    );
+
+    detailSection.hidden = true;
+    document.querySelector("main").classList.remove("detail-view-active");
+
+    if (state.view === "documents") {
+      documentsView.hidden = false;
+      scheduleView.hidden = true;
+      uploadSection.hidden = false;
+      docsSection.hidden = false;
+    } else if (state.view === "schedule") {
+      documentsView.hidden = true;
+      scheduleView.hidden = false;
+      uploadSection.hidden = true;
+      docsSection.hidden = true;
+      loadSchedule();
+    }
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -170,21 +253,22 @@ dropZone.addEventListener("dragleave", () => {
 dropZone.addEventListener("drop", (e) => {
   e.preventDefault();
   dropZone.classList.remove("dragover");
-  const file = e.dataTransfer.files[0];
-  if (file) uploadFile(file);
+  const files = Array.from(e.dataTransfer.files);
+  if (files.length > 0) uploadFiles(files);
 });
 
 fileInput.addEventListener("change", () => {
-  if (fileInput.files[0]) uploadFile(fileInput.files[0]);
+  const files = Array.from(fileInput.files);
+  if (files.length > 0) uploadFiles(files);
 });
 
-async function uploadFile(file) {
+async function uploadFile(file, isBatch = false) {
   if (!file.name.toLowerCase().endsWith(".pdf")) {
-    showUploadStatus("Only PDF files are supported.", "error");
-    return;
+    showUploadStatus(`"${file.name}": Only PDF files are supported.`, "error");
+    return { success: false, error: "Invalid extension" };
   }
 
-  showUploadStatus(`Uploading "${file.name}"…`, "info");
+  if (!isBatch) showUploadStatus(`Uploading "${file.name}"…`, "info");
 
   const form = new FormData();
   form.append("file", file);
@@ -200,19 +284,161 @@ async function uploadFile(file) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Upload failed");
 
-    showUploadStatus(`"${data.filename}" uploaded — processing…`, "success");
-    fileInput.value = "";
-    loadDocuments();
-    startPolling();
+    if (data.existing) {
+      if (!isBatch) showDuplicatePrompt(data);
+      else {
+        // In batch mode, we just log the duplicate and move on
+        // The user can see the duplicate in the final summary or by checking the list
+      }
+      return { success: true, existing: true, data };
+    }
+
+    if (!isBatch) {
+      showUploadStatus(`"${data.filename}" uploaded — processing…`, "success");
+      fileInput.value = "";
+      loadDocuments();
+      startPolling();
+    }
+    return { success: true, existing: false, data };
   } catch (err) {
-    showUploadStatus(err.message, "error");
+    if (!isBatch) showUploadStatus(err.message, "error");
+    return { success: false, error: err.message };
   }
 }
 
-function showUploadStatus(msg, type) {
+async function uploadFiles(files) {
+  showUploadStatus(
+    `Uploading ${files.length} file${files.length > 1 ? "s" : ""}...`,
+    "info",
+  );
+
+  let successCount = 0;
+  let duplicateCount = 0;
+  let errorCount = 0;
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    showUploadStatus(
+      `Uploading ${i + 1}/${files.length}: <strong>${escapeHTML(file.name)}</strong>...`,
+      "info",
+    );
+    const result = await uploadFile(file, true);
+    if (result.success) {
+      if (result.existing) duplicateCount++;
+      else successCount++;
+    } else {
+      errorCount++;
+    }
+  }
+
+  let finalMsg = `Processed ${files.length} file${files.length > 1 ? "s" : ""}: ${successCount} uploaded`;
+  if (duplicateCount > 0) finalMsg += `, ${duplicateCount} duplicates`;
+  if (errorCount > 0) finalMsg += `, ${errorCount} failed`;
+
+  showUploadStatus(finalMsg, errorCount > 0 ? "warning" : "success", 8000);
+  showToast(finalMsg, errorCount > 0 ? "warning" : "success");
+
+  fileInput.value = "";
+  loadDocuments();
+  startPolling();
+}
+
+function showDuplicatePrompt(data) {
+  const actions = document.createElement("div");
+  actions.style.display = "flex";
+  actions.style.gap = "0.5rem";
+  actions.style.marginTop = "0.75rem";
+
+  const viewBtn = document.createElement("button");
+  viewBtn.className = "btn btn-primary";
+  viewBtn.textContent = "View Existing";
+  viewBtn.onclick = () => {
+    uploadStatus.innerHTML = "";
+    uploadStatus.hidden = true;
+    openDocument(data.document_id, "documents");
+  };
+
+  const reprocessBtn = document.createElement("button");
+  reprocessBtn.className = "btn btn-ghost";
+  reprocessBtn.textContent = data.is_verified
+    ? "Already Verified"
+    : "Re-process";
+  reprocessBtn.disabled = !!data.is_verified;
+  reprocessBtn.onclick = async () => {
+    if (
+      !confirm(
+        "Are you sure you want to re-process this document? This will overwrite any existing PO data.",
+      )
+    )
+      return;
+    reprocessBtn.disabled = true;
+    reprocessBtn.textContent = "Re-processing…";
+    try {
+      const res = await fetch(
+        `${API}/documents/${data.document_id}/reextract`,
+        {
+          method: "POST",
+        },
+      );
+      if (!res.ok) throw new Error("Re-processing failed");
+      uploadStatus.innerHTML = `<span class="upload-status success">Re-processing started.</span>`;
+      loadDocuments();
+      startPolling();
+    } catch (err) {
+      uploadStatus.innerHTML = `<span class="upload-status error">${err.message}</span>`;
+    }
+  };
+
+  actions.appendChild(viewBtn);
+  actions.appendChild(reprocessBtn);
+
   uploadStatus.hidden = false;
-  uploadStatus.textContent = msg;
+  uploadStatus.className = "upload-status info";
+  uploadStatus.innerHTML = `"${escapeHTML(data.original_name || data.filename)}" has already been uploaded. `;
+  uploadStatus.appendChild(actions);
+}
+
+function showUploadStatus(msg, type, duration = null) {
+  uploadStatus.hidden = false;
+  uploadStatus.innerHTML = msg;
   uploadStatus.className = `upload-status ${type}`;
+  if (duration) {
+    setTimeout(() => {
+      uploadStatus.hidden = true;
+    }, duration);
+  }
+}
+
+function showToast(msg, type = "info", duration = 5000) {
+  let container = document.querySelector(".toast-container");
+  if (!container) {
+    container = document.createElement("div");
+    container.className = "toast-container";
+    document.body.appendChild(container);
+  }
+
+  const toast = document.createElement("div");
+  toast.className = `toast ${type}`;
+  toast.innerHTML = `<span>${msg}</span>`;
+
+  const closeBtn = document.createElement("button");
+  closeBtn.innerHTML = "&times;";
+  closeBtn.className = "btn btn-ghost";
+  closeBtn.style.padding = "0.2rem 0.5rem";
+  closeBtn.style.fontSize = "1.2rem";
+  closeBtn.style.lineHeight = "1";
+  closeBtn.onclick = () => toast.remove();
+  toast.appendChild(closeBtn);
+
+  container.appendChild(toast);
+  setTimeout(() => {
+    if (toast.parentNode) {
+      toast.style.opacity = "0";
+      toast.style.transform = "translateX(100%)";
+      toast.style.transition = "all 0.3s ease";
+      setTimeout(() => toast.remove(), 300);
+    }
+  }, duration);
 }
 
 // ---------------------------------------------------------------------------
@@ -223,13 +449,44 @@ async function loadDocuments() {
   try {
     const res = await fetch(`${API}/documents`);
     const docs = await res.json();
+
+    // Notify when documents finish processing
+    if (previousDocs.length > 0) {
+      docs.forEach((doc) => {
+        const prev = previousDocs.find((p) => p.id === doc.id);
+        if (prev && prev.status !== doc.status) {
+          if (doc.status === "completed") {
+            showToast(
+              `Document "${escapeHTML(doc.original_name)}" is now ready!`,
+              "success",
+            );
+          } else if (doc.status === "error") {
+            showToast(
+              `Error processing "${escapeHTML(doc.original_name)}".`,
+              "error",
+            );
+          }
+        }
+      });
+    }
+    previousDocs = docs;
+
     renderDocumentList(docs);
 
-    const hasActive = docs.some(
+    const activeDoc = docs.find(
       (d) => d.status === "processing" || d.status === "analyzing",
     );
-    if (hasActive) startPolling();
-    else stopPolling();
+    if (activeDoc) {
+      startPolling();
+    } else {
+      stopPolling();
+    }
+
+    // Always refresh the detail view if a document is open
+    const currentDocId = detailSection.dataset.docId;
+    if (currentDocId && !detailSection.hidden) {
+      refreshDocumentDetail(currentDocId);
+    }
   } catch (err) {
     docsList.innerHTML = `<p class="empty-state">Failed to load documents.</p>`;
   }
@@ -327,26 +584,75 @@ function stopPolling() {
 //  Document detail
 // ---------------------------------------------------------------------------
 
-async function openDocument(id, origin) {
+async function refreshDocumentDetail(id) {
+  try {
+    const res = await fetch(`${API}/documents/${id}`);
+    if (!res.ok) return;
+    const doc = await res.json();
+
+    detailHeader.innerHTML = `
+      <h3>${escapeHTML(doc.original_name)}</h3>
+      <p class="detail-meta">
+        Uploaded ${new Date(doc.upload_time).toLocaleString()}
+        ${doc.page_count ? ` &middot; ${doc.page_count} pages` : ""}
+        &middot; ${badgeHTML(doc.status)}
+      </p>
+    `;
+
+    let poData = null;
+    try {
+      const poRes = await fetch(`${API}/purchase-orders`);
+      const allPOs = await poRes.json();
+      poData = allPOs.find((po) => po.document_id === doc.id) || null;
+    } catch (_) {
+      /* PO data fetch is optional */
+    }
+    window.currentPOData = poData;
+
+    if (doc.status === "error") {
+      document.getElementById("pdf-viewer-container").innerHTML =
+        `<p class="upload-status error">${escapeHTML(doc.error)}</p>`;
+      document.getElementById("po-content").innerHTML = "";
+      return;
+    }
+
+    poEditMode = false;
+    renderPOTab(poData);
+
+    const editBtn = document.getElementById("edit-po-btn");
+    const isVerified = !!poData?.verified_at;
+    editBtn.textContent = "Edit";
+    editBtn.disabled = isVerified;
+    editBtn.onclick = () => togglePOEditMode(poData);
+  } catch (_) {
+    /* silently fail refresh */
+  }
+}
+
+async function openDocument(id, origin, pushState = true) {
   if (origin) detailOrigin = origin;
+
+  if (pushState) {
+    history.pushState({ view: "detail", docId: id, origin }, "", `#doc/${id}`);
+  }
 
   try {
     const res = await fetch(`${API}/documents/${id}`);
     if (!res.ok) throw new Error("Not found");
     const doc = await res.json();
 
-    if (doc.status === "processing") {
-      showUploadStatus("Document is still processing. Please wait…", "info");
-      return;
-    }
-
+    documentsView.hidden = false;
+    scheduleView.hidden = true;
     uploadSection.hidden = true;
     docsSection.hidden = true;
     detailSection.hidden = false;
+    document.querySelector("main").classList.add("detail-view-active");
     detailSection.dataset.docId = id;
 
-    backBtn.hidden = detailOrigin === "schedule";
-    backSchedBtn.hidden = detailOrigin !== "schedule";
+    backBtn.style.display =
+      detailOrigin === "documents" ? "inline-flex" : "none";
+    backSchedBtn.style.display =
+      detailOrigin === "schedule" ? "inline-flex" : "none";
 
     detailHeader.innerHTML = `
       <h3>${escapeHTML(doc.original_name)}</h3>
@@ -358,7 +664,9 @@ async function openDocument(id, origin) {
     `;
 
     if (doc.status === "error") {
-      detailContent.innerHTML = `<p class="upload-status error">${escapeHTML(doc.error)}</p>`;
+      document.getElementById("pdf-viewer-container").innerHTML =
+        `<p class="upload-status error">${escapeHTML(doc.error)}</p>`;
+      document.getElementById("po-content").innerHTML = "";
       return;
     }
 
@@ -370,36 +678,35 @@ async function openDocument(id, origin) {
     } catch (_) {
       /* PO data fetch is optional */
     }
+    window.currentPOData = poData;
 
-    renderDetailTab("pdf", doc, poData);
-    $$(".tab").forEach((t) => {
-      t.classList.toggle("active", t.dataset.tab === "pdf");
-      t.onclick = () => {
-        $$(".tab").forEach((tt) => tt.classList.remove("active"));
-        t.classList.add("active");
-        renderDetailTab(t.dataset.tab, doc, poData);
-      };
-    });
+    document.getElementById("pdf-viewer-container").innerHTML =
+      `<iframe src="${API}/documents/${doc.id}/pdf" title="PDF Viewer"></iframe>`;
+    renderPOTab(poData);
+
+    const editBtn = document.getElementById("edit-po-btn");
+    const isVerified = !!poData?.verified_at;
+    editBtn.textContent = "Edit";
+    editBtn.disabled = isVerified;
+    editBtn.onclick = () => togglePOEditMode(poData);
   } catch (err) {
     showUploadStatus("Could not load document details.", "error");
   }
 }
 
-function renderDetailTab(tab, doc, poData) {
-  if (tab === "pdf") {
-    detailContent.innerHTML = `<iframe class="pdf-viewer" src="${API}/documents/${doc.id}/pdf" title="PDF Viewer"></iframe>`;
-  } else if (tab === "po") {
-    renderPOTab(poData);
-  }
+let poEditMode = false;
+
+function togglePOEditMode(poData) {
+  poEditMode = !poEditMode;
+  const editBtn = document.getElementById("edit-po-btn");
+  editBtn.textContent = poEditMode ? "Cancel" : "Edit";
+  renderPOTab(poData);
 }
 
 async function saveCorrections() {
-  const btn = document.getElementById("save-po-btn");
   const docId = detailSection.dataset.docId;
-
   const corrections = [];
 
-  // Collect PO meta corrections
   $$(".po-edit-input").forEach((input) => {
     if (input.value !== input.dataset.orig) {
       corrections.push({
@@ -411,16 +718,38 @@ async function saveCorrections() {
     }
   });
 
-  // Collect Item corrections
   $$(".item-edit-input").forEach((input) => {
-    if (input.value !== input.dataset.orig) {
+    const itemId = input.dataset.itemId;
+    if (!itemId.startsWith("new_") && input.value !== input.dataset.orig) {
       corrections.push({
         entity_type: "ITEM",
-        entity_id: input.dataset.itemId,
+        entity_id: itemId,
         field_name: input.dataset.field,
         new_value: input.value,
       });
     }
+  });
+
+  $$(".panel-table tbody tr[data-deleted='true']").forEach((row) => {
+    const itemId = row.querySelector(".item-edit-input")?.dataset.itemId;
+    if (itemId && !itemId.startsWith("new_")) {
+      corrections.push({ entity_type: "DELETE_ITEM", entity_id: itemId });
+    }
+  });
+
+  const newItems = {};
+  $$(".item-edit-input").forEach((input) => {
+    const row = input.closest("tr");
+    if (row && row.dataset.deleted === "true") return;
+    const itemId = input.dataset.itemId;
+    if (itemId.startsWith("new_")) {
+      if (!newItems[itemId]) newItems[itemId] = {};
+      newItems[itemId][input.dataset.field] = input.value;
+    }
+  });
+  const poId = document.querySelector(".po-edit-input")?.dataset.poId;
+  Object.values(newItems).forEach((fields) => {
+    corrections.push({ entity_type: "ADD_ITEM", po_id: poId, ...fields });
   });
 
   if (corrections.length === 0) {
@@ -429,56 +758,75 @@ async function saveCorrections() {
   }
 
   try {
-    btn.disabled = true;
-    btn.textContent = "Saving...";
-
     const res = await fetch(`${API}/purchase-orders/correct`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        document_id: detailSection.dataset.docId,
+        document_id: docId,
         corrections: corrections,
       }),
     });
 
     if (!res.ok) throw new Error("Failed to save corrections");
 
-    showUploadStatus("Corrections saved successfully!", "success");
-    // Refresh data
-    await openDocument(detailSection.dataset.docId, detailOrigin);
+    showUploadStatus("Changes saved successfully!", "success");
+    poEditMode = false;
+    await openDocument(docId, detailOrigin);
   } catch (err) {
     showUploadStatus(err.message, "error");
-  } finally {
-    btn.disabled = false;
-    btn.textContent = "Save Corrections";
   }
 }
 
 function renderPOTab(poData) {
+  const container = document.getElementById("po-content");
   if (!poData) {
-    detailContent.innerHTML = `<p class="empty-state">No Purchase Order data extracted from this document.</p>`;
+    container.innerHTML = `<p class="empty-state">No Purchase Order data extracted from this document.</p>`;
     return;
   }
 
+  if (poEditMode) {
+    renderPOEditMode(poData, container);
+  } else {
+    renderPOReadOnly(poData, container);
+  }
+}
+
+function renderPOReadOnly(poData, container) {
+  const verifiedBadge = poData.verified_at
+    ? `<span class="badge badge-completed" style="margin-left:0.5rem;font-size:0.7rem">&#10003; Verified</span>`
+    : "";
+  const verifyBtn = !poData.verified_at
+    ? `<button class="btn btn-primary" style="margin-left:auto;font-size:0.8rem;padding:0.35rem 0.7rem" onclick="verifyPO('${poData.id}')">Mark as Verified</button>`
+    : "";
+  const unverifyBtn = poData.verified_at
+    ? `<button class="btn btn-ghost" style="margin-left:auto;font-size:0.8rem;padding:0.35rem 0.7rem" onclick="unverifyPO('${poData.id}')">Un-verify</button>`
+    : "";
+  const reextractBtn = !poData.verified_at
+    ? `<button class="btn btn-ghost" style="margin-left:0.5rem;font-size:0.8rem;padding:0.35rem 0.7rem" onclick="reextractDocument()">&#8635; Re-extract</button>`
+    : "";
+
   const metaHTML = `
-    <div class="po-edit-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
-      <h3 style="margin:0">Extracted PO Data</h3>
-      <button id="save-po-btn" class="btn btn-primary" onclick="saveCorrections()">Save Corrections</button>
+    <div style="display:flex;align-items:center;margin-bottom:1rem;flex-wrap:wrap;gap:0.5rem">
+      <h3 style="margin:0;font-size:1.1rem">Extracted PO Data</h3>
+      ${verifiedBadge}
+      ${reextractBtn}
+      ${verifyBtn}
+      ${unverifyBtn}
     </div>
-    <div class="po-meta-grid">
-      <div class="po-meta-item">
+    <div class="po-readonly-grid">
+      <div class="po-readonly-item">
         <span class="label">Company</span>
-        <input class="po-edit-input" data-po-id="${poData.id}" data-field="company_name" data-orig="${escapeHTML(poData.company_name || "")}" value="${escapeHTML(poData.company_name || "—")}">
+        <span class="value">${escapeHTML(poData.company_name || "—")}</span>
       </div>
-      <div class="po-meta-item">
+      <div class="po-readonly-item">
         <span class="label">PO Number</span>
-        <input class="po-edit-input" data-po-id="${poData.id}" data-field="po_number" data-orig="${escapeHTML(poData.po_number || "")}" value="${escapeHTML(poData.po_number || "—")}">
+        <span class="value">${escapeHTML(poData.po_number || "—")}</span>
       </div>
-      <div class="po-meta-item">
+      <div class="po-readonly-item">
         <span class="label">Order Date</span>
-        <input class="po-edit-input" data-po-id="${poData.id}" data-field="po_date" data-orig="${formatDate(poData.po_date) || ""}" value="${formatDate(poData.po_date) || "—"}">
+        <span class="value">${formatDate(poData.po_date) || "—"}</span>
       </div>
-      <div class="po-meta-item">
+      <div class="po-readonly-item">
         <span class="label">Line Items</span>
         <span class="value">${poData.items ? poData.items.length : 0}</span>
       </div>
@@ -491,50 +839,216 @@ function renderPOTab(poData) {
       .map(
         (item) => `
         <tr>
-          <td data-label="Item" class="item-cell">
-            <input class="item-edit-input" data-item-id="${item.id}" data-field="item_name" data-orig="${escapeHTML(item.item_name || "")}" value="${escapeHTML(item.item_name || "—")}">
-          </td>
-          <td data-label="Description">
-            <input class="item-edit-input" data-item-id="${item.id}" data-field="description" data-orig="${escapeHTML(item.description || "")}" value="${escapeHTML(item.description || "—")}">
-          </td>
-          <td data-label="Due Date">
-            <input type="date" class="item-edit-input" data-item-id="${item.id}" data-field="due_date" data-orig="${formatDate(item.due_date) || ""}" value="${formatDate(item.due_date) || ""}">
-          </td>
-          <td data-label="Qty" style="text-align:center">
-            <input class="item-edit-input" data-item-id="${item.id}" data-field="quantity" data-orig="${escapeHTML(item.quantity || "")}" value="${escapeHTML(item.quantity || "—")}">
-          </td>
-          <td data-label="Unit Price" style="text-align:right">
-            <input class="item-edit-input" data-item-id="${item.id}" data-field="unit_price" data-orig="${formatPrice(item.unit_price) || ""}" value="${formatPrice(item.unit_price) || "—"}">
-          </td>
+          <td data-label="Item" class="item-cell">${escapeHTML(item.item_name || "—")}</td>
+          <td data-label="Description">${escapeHTML(item.description || "—")}</td>
+          <td data-label="Due Date">${formatDate(item.due_date) || "—"}</td>
+          <td data-label="Qty" style="text-align:center">${escapeHTML(item.quantity || "—")}</td>
+          <td data-label="Unit Price" style="text-align:right">${formatPrice(item.unit_price) || "—"}</td>
         </tr>`,
       )
       .join("");
 
     itemsHTML = `
-      <div class="table-wrapper">
-        <table class="data-table">
+      <div class="panel-table-wrapper">
+        <table class="panel-table">
           <thead>
             <tr>
               <th>Item</th>
               <th>Description</th>
               <th>Due Date</th>
-              <th style="text-align:center">Qty</th>
-              <th style="text-align:right">Unit Price</th>
+              <th>Qty</th>
+              <th>Unit Price</th>
             </tr>
           </thead>
-          <tbody>${rows}</tbody>
+          <tbody>
+            ${rows}
+          </tbody>
         </table>
       </div>
     `;
   } else {
-    itemsHTML = `<p class="empty-state">No line items extracted.</p>`;
+    itemsHTML = `<p class="empty-state">No line items found.</p>`;
   }
 
-  detailContent.innerHTML = metaHTML + itemsHTML;
+  container.innerHTML = metaHTML + itemsHTML;
+}
+
+function renderPOEditMode(poData, container) {
+  const metaHTML = `
+    <div class="po-edit-grid">
+      <div class="po-edit-item">
+        <span class="label">Company</span>
+        <input class="po-edit-input" data-po-id="${poData.id}" data-field="company_name" data-orig="${escapeHTML(poData.company_name || "")}" value="${escapeHTML(poData.company_name || "")}">
+      </div>
+      <div class="po-edit-item">
+        <span class="label">PO Number</span>
+        <input class="po-edit-input" data-po-id="${poData.id}" data-field="po_number" data-orig="${escapeHTML(poData.po_number || "")}" value="${escapeHTML(poData.po_number || "")}">
+      </div>
+      <div class="po-edit-item">
+        <span class="label">Order Date</span>
+        <input type="date" class="po-edit-input" data-po-id="${poData.id}" data-field="po_date" data-orig="${formatDateForInput(poData.po_date)}" value="${formatDateForInput(poData.po_date)}">
+      </div>
+    </div>
+  `;
+
+  let rows = "";
+  if (poData.items && poData.items.length) {
+    rows = poData.items
+      .map(
+        (item) => `
+        <tr>
+          <td data-label="Item" class="item-cell">
+            <input class="item-edit-input" data-item-id="${item.id}" data-field="item_name" data-orig="${escapeHTML(item.item_name || "")}" value="${escapeHTML(item.item_name || "")}">
+          </td>
+          <td data-label="Description">
+            <input class="item-edit-input" data-item-id="${item.id}" data-field="description" data-orig="${escapeHTML(item.description || "")}" value="${escapeHTML(item.description || "")}">
+          </td>
+          <td data-label="Due Date">
+            <input type="date" class="item-edit-input" data-item-id="${item.id}" data-field="due_date" data-orig="${formatDateForInput(item.due_date)}" value="${formatDateForInput(item.due_date)}">
+          </td>
+          <td data-label="Qty" style="text-align:center">
+            <input class="item-edit-input" data-item-id="${item.id}" data-field="quantity" data-orig="${escapeHTML(item.quantity || "")}" value="${escapeHTML(item.quantity || "")}">
+          </td>
+          <td data-label="Unit Price" style="text-align:right">
+            <input class="item-edit-input" data-item-id="${item.id}" data-field="unit_price" data-orig="${escapeHTML(item.unit_price || "")}" value="${escapeHTML(item.unit_price || "")}">
+          </td>
+          <td style="text-align:center">
+            <button class="btn btn-danger item-delete-btn" style="padding:.25rem .4rem;font-size:.75rem" onclick="this.closest('tr').dataset.deleted='true';this.closest('tr').style.opacity='0.4';this.disabled=true;">×</button>
+          </td>
+        </tr>`,
+      )
+      .join("");
+  }
+
+  const itemsHTML = `
+    <div class="panel-table-wrapper">
+      <table class="panel-table">
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th>Description</th>
+            <th>Due Date</th>
+            <th>Qty</th>
+            <th>Unit Price</th>
+            <th style="width:40px"></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows}
+        </tbody>
+      </table>
+    </div>
+    <button class="btn btn-ghost" style="margin-top:.6rem" onclick="addNewItemRow()">+ Add Item</button>
+  `;
+
+  const actionsHTML = `
+    <div class="edit-actions">
+      <button class="btn btn-primary" onclick="saveCorrections()">Save Changes</button>
+      <button class="btn btn-ghost" onclick="togglePOEditMode(window.currentPOData)">Cancel</button>
+    </div>
+  `;
+
+  container.innerHTML = metaHTML + itemsHTML + actionsHTML;
+}
+
+let newItemCounter = 0;
+
+async function verifyPO(poId) {
+  try {
+    const res = await fetch(`${API}/purchase-orders/${poId}/verify`, {
+      method: "POST",
+    });
+    if (!res.ok) throw new Error("Failed to verify");
+    showUploadStatus("Purchase Order marked as verified!", "success");
+    await openDocument(detailSection.dataset.docId, detailOrigin);
+  } catch (err) {
+    showUploadStatus(err.message, "error");
+  }
+}
+
+async function unverifyPO(poId) {
+  if (
+    !confirm(
+      "Are you sure you want to un-verify this Purchase Order? This will remove it from the few-shot learning examples.",
+    )
+  ) {
+    return;
+  }
+  try {
+    const res = await fetch(`${API}/purchase-orders/${poId}/unverify`, {
+      method: "POST",
+    });
+    if (!res.ok) throw new Error("Failed to un-verify");
+    showUploadStatus("Purchase Order marked as unverified", "success");
+    await openDocument(detailSection.dataset.docId, detailOrigin);
+  } catch (err) {
+    showUploadStatus(err.message, "error");
+  }
+}
+
+async function reextractDocument() {
+  const docId = detailSection.dataset.docId;
+  if (!docId) return;
+
+  if (
+    !confirm(
+      "Are you sure you want to re-extract PO data? This will delete current extractions and start over.",
+    )
+  )
+    return;
+
+  const container = document.getElementById("po-content");
+  container.innerHTML = `
+    <div class="empty-state" style="display:flex;flex-direction:column;align-items:center;gap:0.75rem;padding:3rem 1rem">
+      <span class="spinner" style="width:28px;height:28px;border-width:3px"></span>
+      <span style="font-size:0.95rem;color:var(--clr-muted);font-weight:600">Re-extracting PO data…</span>
+      <span style="font-size:0.8rem;color:var(--clr-faint)">This may take 30–60 seconds</span>
+    </div>
+  `;
+
+  try {
+    const res = await fetch(`${API}/documents/${docId}/reextract`, {
+      method: "POST",
+    });
+    if (!res.ok) throw new Error("Re-extraction failed");
+    loadDocuments();
+    startPolling();
+  } catch (err) {
+    container.innerHTML = `<p class="upload-status error">${escapeHTML(err.message)}</p>`;
+  }
+}
+
+function addNewItemRow() {
+  const tbody = document.querySelector(".panel-table tbody");
+  if (!tbody) return;
+  newItemCounter++;
+  const newId = `new_${newItemCounter}`;
+  const tr = document.createElement("tr");
+  tr.innerHTML = `
+    <td data-label="Item" class="item-cell">
+      <input class="item-edit-input" data-item-id="${newId}" data-field="item_name" value="">
+    </td>
+    <td data-label="Description">
+      <input class="item-edit-input" data-item-id="${newId}" data-field="description" value="">
+    </td>
+    <td data-label="Due Date">
+      <input type="date" class="item-edit-input" data-item-id="${newId}" data-field="due_date" value="">
+    </td>
+    <td data-label="Qty" style="text-align:center">
+      <input class="item-edit-input" data-item-id="${newId}" data-field="quantity" value="">
+    </td>
+    <td data-label="Unit Price" style="text-align:right">
+      <input class="item-edit-input" data-item-id="${newId}" data-field="unit_price" value="">
+    </td>
+    <td style="text-align:center">
+      <button class="btn btn-danger item-delete-btn" style="padding:.25rem .4rem;font-size:.75rem" onclick="this.closest('tr').remove()">×</button>
+    </td>
+  `;
+  tbody.appendChild(tr);
 }
 
 // ---------------------------------------------------------------------------
-//  Schedule view — data & filters
+//  Schedule
 // ---------------------------------------------------------------------------
 
 async function loadSchedule() {
@@ -663,12 +1177,6 @@ function renderScheduleTable(items) {
 
   scheduleContainer.querySelectorAll(".doc-link").forEach((el) =>
     el.addEventListener("click", () => {
-      $$(".nav-btn").forEach((b) =>
-        b.classList.toggle("active", b.dataset.view === "documents"),
-      );
-      currentView = "documents";
-      documentsView.hidden = false;
-      scheduleView.hidden = true;
       openDocument(el.dataset.docId, "schedule");
     }),
   );
@@ -845,12 +1353,6 @@ function openCalPopover(cell, dateStr, dayItems) {
     el.addEventListener("click", (e) => {
       e.stopPropagation();
       closeCalPopover();
-      $$(".nav-btn").forEach((b) =>
-        b.classList.toggle("active", b.dataset.view === "documents"),
-      );
-      currentView = "documents";
-      documentsView.hidden = false;
-      scheduleView.hidden = true;
       openDocument(el.dataset.docId, "schedule");
     });
   });
@@ -927,6 +1429,21 @@ function formatDate(dateStr) {
   }
 }
 
+function formatDateForInput(dateStr) {
+  if (!dateStr) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return dateStr;
+  try {
+    const d = new Date(dateStr + "T00:00:00");
+    if (isNaN(d.getTime())) return "";
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    const year = d.getFullYear();
+    return `${year}-${month}-${day}`;
+  } catch {
+    return "";
+  }
+}
+
 function formatPrice(val) {
   if (!val) return "—";
   const n = parseFloat(val);
@@ -963,12 +1480,16 @@ backBtn.addEventListener("click", () => {
   detailSection.hidden = true;
   uploadSection.hidden = false;
   docsSection.hidden = false;
+  document.querySelector("main").classList.remove("detail-view-active");
+  stopPolling();
 });
 
 backSchedBtn.addEventListener("click", () => {
   detailSection.hidden = true;
   uploadSection.hidden = false;
   docsSection.hidden = false;
+  document.querySelector("main").classList.remove("detail-view-active");
+  stopPolling();
   currentView = "schedule";
   $$(".nav-btn").forEach((b) =>
     b.classList.toggle("active", b.dataset.view === "schedule"),

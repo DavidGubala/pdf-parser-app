@@ -110,6 +110,7 @@ If needed, you can further use the `web_scraper.py` file to scrape the web page 
 - Railway deployment: gunicorn as WSGI server, `railway.json` for start command, `PORT` env var for binding.
 - JarBorne is the user's company (vendor/supplier). The "Company Name" on POs should be the **customer/buyer** (Ship To), not the vendor. Extract from "Ship To:" field.
 - For multi-stage background processing, use explicit per-stage DB status values (`processing` → `analyzing` → `completed`) instead of a single `processing` flag. This lets the frontend show accurate progress and only mark done when the final stage finishes.
+- Verified PO data should be stored as JSON snapshots in a dedicated table (`verified_examples`) for few-shot prompting. On each new extraction, pass the last N verified examples to the LLM alongside the raw document text. This teaches the model the user's specific PO format patterns without fragile per-field correction tracking.
 
 # Scratchpad
 
@@ -184,7 +185,7 @@ Keep public website on always-on Linux machine, offload PDF processing (Docling)
 [X] Update docker-compose.dev.yml: remove GPU reservations, add remote service env vars
 [X] Create .env.example with all required environment variables
 
-## Current Task: Fix Processing Status & Loading Bar
+## Previous Task: Fix Processing Status & Loading Bar
 
 ### Problem
 After upload, the document status immediately shows "Completed" once the remote PDF extraction returns, but the LLM call for PO extraction may still be running. The user sees incomplete/missing PO data. The loading UI is just a small spinner in the badge — not informative enough for a multi-stage process.
@@ -200,3 +201,60 @@ Introduce a multi-stage status: `processing` (PDF extraction) → `analyzing` (L
 [X] Add CSS for determinate progress bar and stage colors
 [X] Update polling logic to keep polling through `analyzing`
 [X] Test end-to-end upload flow
+
+## Previous Task: Redesign Document Detail View
+
+### Problem
+The document detail view uses tabs (PDF / PO Data) which hides one view at a time. Users want to see both the PDF and extracted PO data simultaneously side-by-side. Also, the current "Save Corrections" flow is always editable — users want a read-only display with an explicit Edit mode, plus the ability to add/delete items.
+
+### Solution
+Replace tabs with side-by-side panels: PDF on the left, PO Data on the right. Default to read-only display. Add an Edit button that toggles edit mode with inline inputs. In edit mode, support adding new items and deleting existing items. Save all changes at once via the existing corrections endpoint.
+
+### Plan
+[X] Update HTML template: replace tabs with detail-panels (pdf-panel + po-panel)
+[X] Add CSS: side-by-side grid layout, panel styles, read-only/edit modes, responsive stacking
+[X] Update JS openDocument(): render PDF iframe and PO data simultaneously
+[X] Add JS togglePOEditMode(): switch between read-only and editable views
+[X] Update JS renderPOReadOnly(): display meta grid + item table without inputs
+[X] Update JS renderPOEditMode(): display inputs, add delete button per row
+[X] Add JS addNewItemRow(): dynamically append empty item row with temp ID
+[X] Update JS saveCorrections(): collect DELETE_ITEM and ADD_ITEM operations
+[X] Extend backend /api/purchase-orders/correct: handle DELETE_ITEM and ADD_ITEM
+[X] Test end-to-end: view PDF + PO side-by-side, edit, add item, delete item, save
+
+## Previous Task: Re-extract & Duplicate Detection
+
+### Problem
+Users need a way to re-run LLM PO extraction on an existing document if the initial extraction was poor. Also, uploading the same PDF twice creates duplicate documents.
+
+### Solution
+Add a "Re-extract" button in the PO Data panel that re-runs PO extraction without re-uploading. Detect duplicate uploads by content hash and prompt the user to view existing or re-process.
+
+### Plan
+[X] Add content_hash column to documents table with migration
+[X] Compute MD5 hash on upload, check for duplicates by (user_id, content_hash)
+[X] Return existing document info on duplicate upload with prompt actions
+[X] Add run_po_extraction() helper for reuse
+[X] Add POST /api/documents/<id>/reextract endpoint
+[X] Delete existing PO data before re-extraction
+[X] Add "&#8635; Re-extract" button to read-only PO header
+[X] Add reextractDocument() JS handler
+[X] Add showDuplicatePrompt() with View Existing / Re-process buttons
+[X] Test end-to-end: duplicate upload prompt, re-extract flow
+
+## Current Task: Few-Shot Learning from Verified POs
+
+### Problem
+LLM extraction quality varies per PO format. Once a user verifies a PO is correct, that verified data should teach the model the user's specific format patterns for future extractions.
+
+### Solution
+Store verified POs as JSON snapshots in `verified_examples` table. On every new extraction, pass the last 3 verified examples to the LLM as few-shot prompts alongside the raw document text.
+
+### Plan
+[X] Add verified_examples table to init_db()
+[X] Snapshot verified PO data on POST /api/purchase-orders/<po_id>/verify
+[X] Add get_verified_examples() helper to fetch last N verified POs
+[X] Pass examples through extract_po_remote() to MacBook service
+[X] Update MacBook ExtractPORequest to accept examples list
+[X] Prepend verified examples to Ollama prompt in /extract-po
+[X] Log example count in extraction request

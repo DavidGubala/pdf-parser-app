@@ -1,169 +1,301 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PDF Parse — Dashboard</title>
-  <link rel="stylesheet" href="/static/css/style.css" />
-  <script>
-    (function(){var t=localStorage.getItem("theme")||(matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light");document.documentElement.setAttribute("data-theme",t)})();
-  </script>
-</head>
-<body>
-  <header>
-    <div class="header-inner">
-      <div class="header-top">
-        <h1><span class="logo-icon">&#128196;</span> PDF Parse</h1>
-        <div class="header-actions">
-          <nav class="main-nav">
-            <button class="nav-btn active" data-view="documents">Documents</button>
-            <button class="nav-btn" data-view="schedule">Schedule</button>
-          </nav>
-          <button id="theme-toggle" class="theme-toggle" title="Toggle dark mode" aria-label="Toggle dark mode">&#9790;</button>
-          <div class="user-menu">
-            <button class="header-user" id="user-menu-btn">{{ username }} <span class="user-caret">&#9662;</span></button>
-            <div class="user-dropdown" id="user-dropdown" hidden>
-              <a href="/logout" class="user-dropdown-item">Sign out</a>
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>PDF Parse — Dashboard</title>
+        <link rel="stylesheet" href="/static/css/style.css" />
+        <script>
+            (function () {
+                var t =
+                    localStorage.getItem("theme") ||
+                    (matchMedia("(prefers-color-scheme:dark)").matches
+                        ? "dark"
+                        : "light");
+                document.documentElement.setAttribute("data-theme", t);
+            })();
+        </script>
+    </head>
+    <body>
+        <header>
+            <div class="header-inner">
+                <div class="header-top">
+                    <h1><span class="logo-icon">&#128196;</span> PDF Parse</h1>
+                    <div class="header-actions">
+                        <nav class="main-nav">
+                            <button
+                                class="nav-btn active"
+                                data-view="documents"
+                            >
+                                Documents
+                            </button>
+                            <button class="nav-btn" data-view="schedule">
+                                Schedule
+                            </button>
+                        </nav>
+                        <button
+                            id="theme-toggle"
+                            class="theme-toggle"
+                            title="Toggle dark mode"
+                            aria-label="Toggle dark mode"
+                        >
+                            &#9790;
+                        </button>
+                        <div class="user-menu">
+                            <button class="header-user" id="user-menu-btn">
+                                {{ username }}
+                                <span class="user-caret">&#9662;</span>
+                            </button>
+                            <div
+                                class="user-dropdown"
+                                id="user-dropdown"
+                                hidden
+                            >
+                                <a href="/logout" class="user-dropdown-item"
+                                    >Sign out</a
+                                >
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <p class="tagline">Upload, extract, schedule</p>
             </div>
-          </div>
-        </div>
-      </div>
-      <p class="tagline">Upload, extract, schedule</p>
-    </div>
-  </header>
+        </header>
 
-  <main>
-    <!-- ============================================================ -->
-    <!--  DOCUMENTS VIEW                                              -->
-    <!-- ============================================================ -->
-    <div id="documents-view">
-      <!-- Upload Section -->
-      <section id="upload-section" class="card">
-        <h2>Upload a PDF</h2>
-        <div id="drop-zone" class="drop-zone">
-          <span class="drop-icon">&#128462;</span>
-          <p class="drop-text">Drag &amp; drop a Purchase Order PDF here, or <label for="file-input" class="file-label">browse files</label></p>
-          <input type="file" id="file-input" accept=".pdf" hidden />
-        </div>
-        <div id="upload-status" class="upload-status" hidden></div>
-      </section>
+        <main>
+            <!-- ============================================================ -->
+            <!--  DOCUMENTS VIEW                                              -->
+            <!-- ============================================================ -->
+            <div id="documents-view">
+                <!-- Upload Section -->
+                <section id="upload-section" class="card">
+                    <h2>Upload a PDF</h2>
+                    <div id="drop-zone" class="drop-zone">
+                        <span class="drop-icon">&#128462;</span>
+                        <p class="drop-text">
+                            Drag &amp; drop a Purchase Order PDF here, or
+                            <label for="file-input" class="file-label"
+                                >browse files</label
+                            >
+                        </p>
+                        <input
+                            type="file"
+                            id="file-input"
+                            accept=".pdf"
+                            multiple
+                            hidden
+                        />
+                    </div>
+                    <div id="upload-status" class="upload-status" hidden></div>
+                </section>
 
-      <!-- Documents List -->
-      <section id="documents-section" class="card">
-        <div class="section-header">
-          <h2>Documents</h2>
-          <button id="refresh-btn" class="btn btn-ghost" title="Refresh">&#8635; Refresh</button>
-        </div>
-        <div id="documents-list" class="documents-list">
-          <p class="empty-state">No documents yet. Upload a PDF to get started.</p>
-        </div>
-      </section>
+                <!-- Documents List -->
+                <section id="documents-section" class="card">
+                    <div class="section-header">
+                        <h2>Documents</h2>
+                        <button
+                            id="refresh-btn"
+                            class="btn btn-ghost"
+                            title="Refresh"
+                        >
+                            &#8635; Refresh
+                        </button>
+                    </div>
+                    <div id="documents-list" class="documents-list">
+                        <p class="empty-state">
+                            No documents yet. Upload a PDF to get started.
+                        </p>
+                    </div>
+                </section>
 
-      <!-- Document Detail -->
-      <section id="detail-section" class="card" hidden>
-        <div class="detail-nav">
-          <button id="back-btn" class="btn btn-ghost">&larr; Back to list</button>
-          <button id="back-schedule-btn" class="btn btn-ghost">&larr; Back to schedule</button>
-        </div>
-        <div id="detail-header" class="detail-header"></div>
-        <div id="detail-tabs" class="tabs">
-          <button class="tab active" data-tab="pdf">PDF</button>
-          <button class="tab" data-tab="po">PO Data</button>
-        </div>
-        <div id="detail-content" class="detail-content"></div>
-      </section>
-    </div>
+                <!-- Document Detail -->
+                <section id="detail-section" class="card" hidden>
+                    <div class="detail-nav">
+                        <button id="back-btn" class="btn btn-ghost">
+                            &larr; Back to list
+                        </button>
+                        <button id="back-schedule-btn" class="btn btn-ghost">
+                            &larr; Back to schedule
+                        </button>
+                    </div>
+                    <div id="detail-header" class="detail-header"></div>
+                    <div id="detail-panels" class="detail-panels">
+                        <div id="pdf-panel" class="detail-panel">
+                            <h3 class="panel-title">PDF</h3>
+                            <div id="pdf-viewer-container"></div>
+                        </div>
+                        <div id="po-panel" class="detail-panel">
+                            <h3 class="panel-title">
+                                PO Data
+                                <button
+                                    id="edit-po-btn"
+                                    class="btn btn-ghost"
+                                    style="
+                                        margin-left: auto;
+                                        font-size: 0.8rem;
+                                        padding: 0.3rem 0.6rem;
+                                    "
+                                >
+                                    Edit
+                                </button>
+                            </h3>
+                            <div id="po-content"></div>
+                        </div>
+                    </div>
+                </section>
+            </div>
 
-    <!-- ============================================================ -->
-    <!--  SCHEDULE VIEW                                               -->
-    <!-- ============================================================ -->
-    <div id="schedule-view" hidden>
-      <!-- Summary Cards -->
-      <div class="summary-grid">
-        <div class="summary-card">
-          <span class="summary-value" id="stat-total-pos">0</span>
-          <span class="summary-label">Purchase Orders</span>
-        </div>
-        <div class="summary-card">
-          <span class="summary-value" id="stat-total-items">0</span>
-          <span class="summary-label">Total Items</span>
-        </div>
-        <div class="summary-card summary-card--warning">
-          <span class="summary-value" id="stat-due-soon">0</span>
-          <span class="summary-label">Due This Week</span>
-        </div>
-        <div class="summary-card summary-card--danger">
-          <span class="summary-value" id="stat-overdue">0</span>
-          <span class="summary-label">Overdue</span>
-        </div>
-      </div>
+            <!-- ============================================================ -->
+            <!--  SCHEDULE VIEW                                               -->
+            <!-- ============================================================ -->
+            <div id="schedule-view" hidden>
+                <!-- Summary Cards -->
+                <div class="summary-grid">
+                    <div class="summary-card">
+                        <span class="summary-value" id="stat-total-pos">0</span>
+                        <span class="summary-label">Purchase Orders</span>
+                    </div>
+                    <div class="summary-card">
+                        <span class="summary-value" id="stat-total-items"
+                            >0</span
+                        >
+                        <span class="summary-label">Total Items</span>
+                    </div>
+                    <div class="summary-card summary-card--warning">
+                        <span class="summary-value" id="stat-due-soon">0</span>
+                        <span class="summary-label">Due This Week</span>
+                    </div>
+                    <div class="summary-card summary-card--danger">
+                        <span class="summary-value" id="stat-overdue">0</span>
+                        <span class="summary-label">Overdue</span>
+                    </div>
+                </div>
 
-      <!-- Filters + View Toggle -->
-      <section class="card">
-        <div class="filter-bar">
-          <div class="filter-group">
-            <label class="filter-label" for="urgency-filter">Status</label>
-            <select id="urgency-filter" class="select-input">
-              <option value="all">All</option>
-              <option value="overdue">Overdue</option>
-              <option value="due_soon">Due this week</option>
-              <option value="upcoming">Upcoming</option>
-              <option value="no_date">No date</option>
-            </select>
-          </div>
-          <div class="filter-group">
-            <label class="filter-label" for="company-filter">Company</label>
-            <select id="company-filter" class="select-input">
-              <option value="all">All companies</option>
-            </select>
-          </div>
-          <div class="filter-group">
-            <label class="filter-label" for="date-from">From</label>
-            <input type="date" id="date-from" class="select-input" />
-          </div>
-          <div class="filter-group">
-            <label class="filter-label" for="date-to">To</label>
-            <input type="date" id="date-to" class="select-input" />
-          </div>
-          <div class="filter-group filter-actions">
-            <button id="clear-filters-btn" class="btn btn-ghost">Clear</button>
-            <button id="refresh-schedule-btn" class="btn btn-ghost" title="Refresh">&#8635;</button>
-          </div>
-          <div class="filter-group view-toggle">
-            <button class="view-btn active" data-mode="list" title="List view">&#9776;</button>
-            <button class="view-btn" data-mode="calendar" title="Calendar view">&#128197;</button>
-          </div>
-        </div>
-      </section>
+                <!-- Filters + View Toggle -->
+                <section class="card">
+                    <div class="filter-bar">
+                        <div class="filter-group">
+                            <label class="filter-label" for="urgency-filter"
+                                >Status</label
+                            >
+                            <select id="urgency-filter" class="select-input">
+                                <option value="all">All</option>
+                                <option value="overdue">Overdue</option>
+                                <option value="due_soon">Due this week</option>
+                                <option value="upcoming">Upcoming</option>
+                                <option value="no_date">No date</option>
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label class="filter-label" for="company-filter"
+                                >Company</label
+                            >
+                            <select id="company-filter" class="select-input">
+                                <option value="all">All companies</option>
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label class="filter-label" for="date-from"
+                                >From</label
+                            >
+                            <input
+                                type="date"
+                                id="date-from"
+                                class="select-input"
+                            />
+                        </div>
+                        <div class="filter-group">
+                            <label class="filter-label" for="date-to">To</label>
+                            <input
+                                type="date"
+                                id="date-to"
+                                class="select-input"
+                            />
+                        </div>
+                        <div class="filter-group filter-actions">
+                            <button
+                                id="clear-filters-btn"
+                                class="btn btn-ghost"
+                            >
+                                Clear
+                            </button>
+                            <button
+                                id="refresh-schedule-btn"
+                                class="btn btn-ghost"
+                                title="Refresh"
+                            >
+                                &#8635;
+                            </button>
+                        </div>
+                        <div class="filter-group view-toggle">
+                            <button
+                                class="view-btn active"
+                                data-mode="list"
+                                title="List view"
+                            >
+                                &#9776;
+                            </button>
+                            <button
+                                class="view-btn"
+                                data-mode="calendar"
+                                title="Calendar view"
+                            >
+                                &#128197;
+                            </button>
+                        </div>
+                    </div>
+                </section>
 
-      <!-- List View -->
-      <section id="schedule-list-section" class="card">
-        <div class="section-header">
-          <h2>Item Schedule</h2>
-          <span id="schedule-count" class="filter-count"></span>
-        </div>
-        <div id="schedule-table-container">
-          <p class="empty-state">No purchase orders yet. Upload a PDF to get started.</p>
-        </div>
-      </section>
+                <!-- List View -->
+                <section id="schedule-list-section" class="card">
+                    <div class="section-header">
+                        <h2>Item Schedule</h2>
+                        <span id="schedule-count" class="filter-count"></span>
+                    </div>
+                    <div id="schedule-table-container">
+                        <p class="empty-state">
+                            No purchase orders yet. Upload a PDF to get started.
+                        </p>
+                    </div>
+                </section>
 
-      <!-- Calendar View -->
-      <section id="schedule-calendar-section" class="card" hidden>
-        <div class="cal-header">
-          <button id="cal-prev" class="btn btn-ghost" title="Previous month">&#9664;</button>
-          <h2 id="cal-title">April 2026</h2>
-          <button id="cal-today" class="btn btn-ghost">Today</button>
-          <button id="cal-next" class="btn btn-ghost" title="Next month">&#9654;</button>
-        </div>
-        <div id="cal-grid" class="cal-grid"></div>
-      </section>
-    </div>
-  </main>
+                <!-- Calendar View -->
+                <section id="schedule-calendar-section" class="card" hidden>
+                    <div class="cal-header">
+                        <button
+                            id="cal-prev"
+                            class="btn btn-ghost"
+                            title="Previous month"
+                        >
+                            &#9664;
+                        </button>
+                        <h2 id="cal-title">April 2026</h2>
+                        <button id="cal-today" class="btn btn-ghost">
+                            Today
+                        </button>
+                        <button
+                            id="cal-next"
+                            class="btn btn-ghost"
+                            title="Next month"
+                        >
+                            &#9654;
+                        </button>
+                    </div>
+                    <div id="cal-grid" class="cal-grid"></div>
+                </section>
+            </div>
+        </main>
 
-  <footer>
-    <p>PDF Parse &mdash; Powered by <a href="https://www.docling.ai/" target="_blank" rel="noopener">Docling</a> &amp; Flask</p>
-  </footer>
+        <footer>
+            <p>
+                PDF Parse &mdash; Powered by
+                <a href="https://www.docling.ai/" target="_blank" rel="noopener"
+                    >Docling</a
+                >
+                &amp; Flask
+            </p>
+        </footer>
 
-  <script src="/static/js/app.js"></script>
-</body>
+        <script src="/static/js/app.js"></script>
+    </body>
 </html>
